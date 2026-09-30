@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sro.local/schemas/scope.json",
+  "title": "SRO Scope Decision",
+  "description": "Output of the deterministic scope engine. Produced by code, never by a model. There is no 'maybe in scope' verdict: UNKNOWN is blocked exactly like OUT_OF_SCOPE and additionally requires researcher clarification.",
+  "type": "object",
+  "required": ["target", "status", "reason", "allowed"],
+  "additionalProperties": false,
+  "properties": {
+    "target": { "type": "string", "description": "The string the agent asked about, verbatim." },
+    "status": {
+      "type": "string",
+      "enum": ["IN_SCOPE", "OUT_OF_SCOPE", "UNKNOWN"],
+      "description": "IN_SCOPE is permitted subject to restrictions. OUT_OF_SCOPE and UNKNOWN both block execution."
+    },
+    "reason": { "type": "string" },
+    "matched_rule": { "type": ["string", "null"], "description": "The manifest rule that produced the verdict." },
+    "matched_type": { "type": ["string", "null"], "enum": ["inclusion", "exclusion", null] },
+    "match_kind": {
+      "type": ["string", "null"],
+      "enum": ["exact", "broad", null],
+      "description": "'exact' means the rule named the target itself; 'broad' means a rule covers it."
+    },
+    "conflict": {
+      "type": "boolean",
+      "description": "True when an inclusion and an exclusion both match. The exclusion is applied, and the manifest is self-contradictory and should be corrected by the researcher."
+    },
+    "conflict_detail": { "type": "string" },
+    "restrictions": { "type": "array", "items": { "type": "string" } },
+    "allowed": {
+      "type": "boolean",
+      "description": "Derived: true only when status is IN_SCOPE."
+    }
+  }
+}

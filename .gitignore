@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node / opencode deps. These are symlinks or installs, not sources: the
+# trailing-slash form does not match a symlink, hence the bare names.
+node_modules
+.opencode/node_modules
+
+# Runtime state. These hold an engagement, its evidence and its reports: local
+# to one researcher's authorization and never committed.
+engagements/
+evidence/
+reports/
+audit/
+.sro/
+opencode.db*
+*.log
+session.json

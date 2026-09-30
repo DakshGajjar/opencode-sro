@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sro.local/schemas/evidence.json",
+  "title": "SRO Evidence Record",
+  "description": "Every meaningful action produces one of these. The status field is the epistemic status and cannot be self-assigned: an OBSERVED record is only creatable by EvidenceStore.record_observation, which requires a real tool result. Only the verifier may write VERIFIED, REJECTED or INCONCLUSIVE.",
+  "type": "object",
+  "required": ["evidence_id", "timestamp", "status", "actor"],
+  "additionalProperties": false,
+  "properties": {
+    "evidence_id": { "type": "string", "pattern": "^ev_[0-9a-f]{16}$" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "status": {
+      "type": "string",
+      "enum": ["OBSERVED", "INFERRED", "HYPOTHESIS", "VERIFIED", "REJECTED", "INCONCLUSIVE"],
+      "description": "OBSERVED: a tool did this. INFERRED: SRO derived it from observations. HYPOTHESIS: an agent proposed it, unproven. VERIFIED: the verifier confirmed it against cited observations."
+    },
+    "engagement": { "type": "string" },
+    "agent": { "type": "string" },
+    "actor": {
+      "type": "string",
+      "description": "Who created the record: 'tool', 'sro', or a named agent/verifier."
+    },
+    "tool": { "type": "string", "description": "Required for OBSERVED. An observation without a tool is refused." },
+    "capability": { "type": "string" },
+    "target": { "type": "string" },
+    "summary": { "type": "string" },
+    "request": { "description": "What was sent. Bounded and redacted before storage." },
+    "response": { "description": "What came back. Bounded and redacted before storage." },
+    "command": { "type": "string" },
+    "result": { "description": "Structured result." },
+    "screenshots": { "type": "array", "items": { "type": "string" } },
+    "artifacts": { "type": "array", "items": { "type": "string" } },
+    "hypothesis": { "type": "string" },
+    "finding": { "type": "string" },
+    "verification_status": {
+      "type": "string",
+      "enum": ["", "CONFIRMED", "REJECTED", "INCONCLUSIVE"]
+    },
+    "policy": {
+      "type": "object",
+      "description": "The policy decision that permitted the action, stored with the evidence it authorised."
+    },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "redacted": {
+      "type": "boolean",
+      "description": "True when secrets were stripped before storage."
+    }
+  }
+}

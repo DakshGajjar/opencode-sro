@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sro.local/schemas/finding.json",
+  "title": "SRO Finding",
+  "description": "A finding is the pairing of a researcher's hypothesis with a verifier's verdict. The researcher cannot set a status of CONFIRMED: the separation is enforced in code, not by asking an agent to behave differently.",
+  "type": "object",
+  "required": ["finding", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "finding": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["hypothesis", "INCONCLUSIVE", "CONFIRMED", "REJECTED", "unknown"],
+      "description": "'hypothesis' is where every finding starts. Only a verifier verdict moves it."
+    },
+    "title": { "type": "string" },
+    "target": { "type": "string" },
+    "reasoning": { "type": "string", "description": "Researcher's reasoning. Not evidence." },
+    "suggested_test": { "type": "string" },
+    "expected_evidence": {
+      "type": "string",
+      "description": "What the researcher expects to observe. Written down in advance so a post-hoc rationalisation is visible."
+    },
+    "scope_verdict": {
+      "type": "string",
+      "enum": ["IN_SCOPE", "OUT_OF_SCOPE", "UNKNOWN"],
+      "description": "Deterministic scope verdict for the target at verification time."
+    },
+    "verification": {
+      "type": "object",
+      "properties": {
+        "verdict": { "type": "string", "enum": ["CONFIRMED", "REJECTED", "INCONCLUSIVE"] },
+        "verifier": { "type": "string" },
+        "reasoning": { "type": "string" },
+        "cited": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Evidence ids. A CONFIRMED verdict with an empty list is impossible: the store rejects it."
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "evidence": { "type": "array", "items": { "type": "string" } },
+    "severity": {
+      "type": "string",
+      "enum": ["critical", "high", "medium", "low", "info"],
+      "description": "Researcher-stated. SRO does not infer severity from evidence."
+    },
+    "reported": {
+      "type": "boolean",
+      "default": false,
+      "description": "Always false. SRO has no submission capability; disclosure is the researcher's own act."
+    }
+  }
+}

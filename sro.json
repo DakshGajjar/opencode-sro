@@ -1,0 +1,62 @@
+{
+  "$comment": "SRO configuration. Read by the Python control plane. Secrets never go here: a provider may only name WHERE a credential lives, and the config parser rejects any key that would enable a write.",
+  "version": 1,
+  "data_dir": ".",
+
+  "providers": {
+    "bugcrowd": {
+      "mode": "public",
+      "credentials": "none",
+      "base_url": "https://api.bugcrowd.com"
+    },
+    "hackerone": {
+      "mode": "public",
+      "credentials": "none",
+      "base_url": "https://api.hackerone.com/v1/graphql"
+    },
+    "intigriti": {
+      "mode": "import_only",
+      "credentials": "none",
+      "base_url": "https://api.intigriti.com"
+    }
+  },
+
+  "models": {
+    "fast_local": {
+      "provider": "ollama",
+      "model": "lfm2.5",
+      "description": "scope parsing, tool selection, output parsing, classification"
+    },
+    "local_reasoning": {
+      "provider": "ollama",
+      "model": "qwen3:14b",
+      "description": "log analysis, security reasoning, report writing"
+    },
+    "security_local": {
+      "provider": "ollama",
+      "model": "spark-x2.5",
+      "description": "hypothesis generation, attack-surface reasoning"
+    }
+  },
+
+  "routing": {
+    "default": "auto",
+    "allow_external": false
+  },
+
+  "policy": {
+    "require_user_confirmation": true,
+    "destructive_requires_ask": true,
+    "out_of_scope": "deny",
+    "unknown_scope": "deny",
+    "rate_limits": {
+      "global_per_minute": 60,
+      "per_host_per_minute": 20
+    }
+  },
+
+  "scope": {
+    "deny_private_networks": true,
+    "wildcard_includes_apex": true
+  }
+}
