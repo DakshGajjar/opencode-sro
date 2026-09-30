@@ -19,3 +19,7 @@ audit/
 session.json
 opencode.db*
 *.log
+
+# Marketplace listing drafts. Regenerate with the repo URL filled in;
+# not part of the package.
+marketplace-submission*.json
