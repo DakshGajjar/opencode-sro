@@ -17,7 +17,7 @@
  * than the one we ship, it is skipped and reported. --force overrides.
  */
 import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises"
-import { existsSync, readdirSync, statSync } from "node:fs"
+import { existsSync, readdirSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -90,12 +90,19 @@ async function installAssets(flags) {
       const source = path.join(from, name)
 
       if (existsSync(target) && !flags.force) {
-        const userIsNewer = statSync(target).mtimeMs >= statSync(source).mtimeMs
-        if (userIsNewer) {
-          console.log(`  skip   ${kind}/${name}  (yours is newer; --force to overwrite)`)
-          skipped++
+        // Compare content, not mtime. An mtime rule gets this wrong in the
+        // dangerous direction: a user edits a file, a new SRO version ships
+        // with a newer mtime, and the edit is silently destroyed. Content is
+        // the only reliable signal that the file is ours or theirs.
+        const installed = await readFile(target, "utf8")
+        const shipped = await readFile(source, "utf8")
+        if (installed === shipped) {
+          console.log(`  same   ${kind}/${name}`)
           continue
         }
+        console.log(`  KEEP   ${kind}/${name}  (differs from ours; --force to overwrite)`)
+        skipped++
+        continue
       }
       if (!flags.dryRun) await cp(source, target)
       console.log(`  write  ${kind}/${name}`)
@@ -136,9 +143,11 @@ async function installAssets(flags) {
   }
 
   console.log(`\nsro: ${written} written, ${skipped} skipped. Restart opencode to load them.`)
-  console.log("sro: to try it without touching a real program:")
-  console.log("       mkdir -p ~/sro-playground && cd ~/sro-playground")
+  console.log("sro: to try it without touching a real program, run opencode from")
+  console.log("     the directory you installed into (not a subdirectory, or the")
+  console.log("     plugin will not resolve):")
   console.log("       npx opencode-sro example > brief.json")
+  console.log("       opencode")
 }
 
 async function writeExample() {
@@ -162,5 +171,5 @@ if (flags.help || command === "help") {
 } else if (command === "example") {
   await writeExample()
 } else {
-  fail(`unknown command ${command!r}. Try: install-assets, example\n\n${HELP}`)
+  fail(`unknown command ${String(command)}. Try: install-assets, example\n\n${HELP}`)
 }

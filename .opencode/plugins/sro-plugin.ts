@@ -92,13 +92,21 @@ function resolveControlPlane(worktree: string): { root: string; source: string }
  * Invoke the SRO CLI. Every exit code carries meaning:
  *   0 ok, 2 policy denied, 3 needs confirmation, 4 usage error
  * so the plugin renders the right message rather than guessing.
+ *
+ * `controlPlane` is where the Python lives (the installed package).
+ * `workspace` is where the researcher's engagement, evidence and reports go.
+ * These are different directories and conflating them is how a state directory
+ * ends up inside node_modules, where the next `npm install` deletes it.
  */
-function makeBridge(root: string): SroBridge {
+function makeBridge(controlPlane: string, workspace: string): SroBridge {
   const run = (args: string[], input?: unknown): Promise<SroResult> => {
     return new Promise((resolve) => {
-      const child = spawn(PYTHON, ["-m", "sro.cli.main", "--root", root, ...args], {
-        cwd: root,
-        env: { ...process.env, PYTHONPATH: [root, process.env.PYTHONPATH].filter(Boolean).join(":") },
+      const child = spawn(PYTHON, ["-m", "sro.cli.main", "--root", workspace, ...args], {
+        cwd: workspace,
+        env: {
+          ...process.env,
+          PYTHONPATH: [controlPlane, process.env.PYTHONPATH].filter(Boolean).join(":"),
+        },
       })
 
       let stdout = ""
@@ -163,7 +171,7 @@ export const SroPlugin: Plugin = async ({ directory, worktree }) => {
         run: async () => ({ code: 4, stdout: "", stderr: located.error, json: { error: located.error } }),
         context: () => "",
       }
-    : makeBridge(located.root)
+    : makeBridge(located.root, workspace)
 
   const sro = {
     /**

@@ -107,10 +107,17 @@ def test_readme_promises_only_commands_that_exist() -> None:
 
 
 def test_installer_does_not_clobber_user_edits_by_default() -> None:
+    """Compares content, not mtime.
+
+    An mtime rule gets this wrong in the dangerous direction: a user edits an
+    agent, a new version ships with a newer mtime, and the edit is destroyed
+    silently. Content is the only reliable signal of "this is ours".
+    """
     installer = (REPO / "bin" / "sro-install-assets.mjs").read_text(encoding="utf-8")
-    assert "yours is newer" in installer
+    assert "differs from ours" in installer
+    assert "installed === shipped" in installer
+    assert "statSync" not in installer, "mtime comparison is the bug this replaced"
     assert "--force" in installer
-    # And it must be a dry run first-class, not an afterthought.
     assert "dryRun" in installer
 
 
@@ -121,3 +128,46 @@ def test_installer_prints_help_without_installing() -> None:
     dispatch = installer.index('if (command === "install-assets")')
     assert help_check < dispatch, "help must be handled before the default command runs"
     assert 'const command = flags.command ?? "install-assets"' in installer
+
+
+def test_publish_gates_are_runnable() -> None:
+    """`prepublishOnly` is the last chance to catch a broken publish.
+
+    Two mistakes lived here: the build emitted `sro-plugin.js` while
+    `main` pointed at `dist/index.js`, so the published plugin would not have
+    loaded at all; and `compileall` wrote __pycache__ into the tarball, which is
+    35 platform-specific .pyc files that no user can use.
+    """
+    scripts = PACKAGE["scripts"]
+    assert "--outfile dist/index.js" in scripts["build"], "build output must match package main"
+    assert PACKAGE["main"] == "dist/index.js"
+    assert "compileall" not in json.dumps(scripts), "must not write bytecode into the tarball"
+    joined = " ".join(PACKAGE["files"])
+    assert "!**/*.pyc" in PACKAGE["files"] or "!**/*.pyc" in joined
+    assert "__pycache__" in joined
+    for script in ("bin/lint-python.py", "bin/sro-install-assets.mjs"):
+        assert (REPO / script).exists(), script
+    assert "lint" in scripts and "test" in scripts
+    assert scripts["prepublishOnly"] == "bun run build && npm run lint && npm test"
+
+
+def test_state_goes_to_the_workspace_not_the_package() -> None:
+    """`--root` and the Python location are different directories.
+
+    Conflating them writes the engagement manifest, the evidence store and the
+    audit log inside node_modules, where the next `npm install` deletes them.
+    """
+    text = PLUGIN.read_text(encoding="utf-8")
+    assert 'makeBridge(controlPlane: string, workspace: string)' in text
+    assert '"-m", "sro.cli.main", "--root", workspace' in text
+    assert "PYTHONPATH: [controlPlane" in text
+    assert "makeBridge(located.root, workspace)" in text
+
+
+def test_readme_does_not_send_users_to_a_directory_without_node_modules() -> None:
+    """OpenCode resolves the plugin from the local node_modules, so a playground
+    in a subdirectory cannot see it. The README used to tell users to make one."""
+    readme = (REPO / "assets" / "README.md").read_text(encoding="utf-8")
+    assert "mkdir -p ~/sro-playground" not in readme
+    assert "subdirectory" in readme
+    assert "where you installed the package" in readme

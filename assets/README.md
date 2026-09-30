@@ -68,8 +68,10 @@ export SRO_PYTHON=/usr/bin/python3.12
 
 ## Try it without touching anything real
 
+Run it in the directory where you installed the package. OpenCode resolves the
+plugin from the local `node_modules`, so a subdirectory will not see it.
+
 ```bash
-mkdir -p ~/sro-playground && cd ~/sro-playground
 npx opencode-sro example > brief.json    # synthetic, .test TLD only
 opencode
 ```

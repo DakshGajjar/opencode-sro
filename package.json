@@ -26,13 +26,15 @@
     "bin/",
     "examples/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "!sro/**/__pycache__",
+    "!**/*.pyc"
   ],
   "scripts": {
-    "build": "bun build .opencode/plugins/sro-plugin.ts --outdir dist --target node --format esm --external @opencode-ai/plugin",
+    "build": "bun build .opencode/plugins/sro-plugin.ts --outfile dist/index.js --target node --format esm --external @opencode-ai/plugin",
     "test": "python3 -m pytest tests -q",
-    "prepublishOnly": "bun run build && python3 -m compileall -q sro && node --check bin/sro-install-assets.mjs",
-    "lint": "python3 -m compileall -q sro && node --check bin/sro-install-assets.mjs"
+    "prepublishOnly": "bun run build && npm run lint && npm test",
+    "lint": "python3 bin/lint-python.py && node --check bin/sro-install-assets.mjs"
   },
   "dependencies": {
     "@opencode-ai/plugin": "^1.18.0"
