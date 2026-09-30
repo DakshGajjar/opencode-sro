@@ -190,3 +190,23 @@ def test_publish_gate_does_not_depend_on_the_publishers_python() -> None:
     assert PACKAGE["scripts"]["test"] == "python3 bin/run-tests.py"
     assert PACKAGE["scripts"]["prepublishOnly"] == "bun run build && npm run lint && npm test"
     assert (REPO / "bin" / "run-tests.py").exists()
+
+
+def test_security_policy_ships_and_points_somewhere_real() -> None:
+    """A published security tool needs a disclosure route, and the policy has to
+    say the things a reader would otherwise file a bug about."""
+    import re
+
+    policy = (REPO / "SECURITY.md").read_text(encoding="utf-8")
+    assert "SECURITY.md" in PACKAGE["files"], "must ship in the package"
+    assert re.search(r"security/advisories/new", policy), "must name a real report route"
+    assert re.search(r"no platform submission capability", policy, re.I)
+    assert re.search(r"cannot tell you whether you are authorized", policy, re.I)
+
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert "SECURITY.md" in readme, "the policy has to be findable from the README"
+
+    # And the npm metadata should point somewhere real, not a placeholder.
+    assert PACKAGE.get("homepage", "").startswith("https://github.com/")
+    assert "github.com" in PACKAGE.get("bugs", {}).get("url", "")
+    assert "YOUR_USERNAME" not in json.dumps(PACKAGE)

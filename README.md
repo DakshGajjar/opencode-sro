@@ -141,6 +141,10 @@ Engagement state, evidence and reports are written to `sro/../engagements`,
 `evidence/` and `reports/` in the project. They are gitignored by the example
 config; add them to yours if your project does not already.
 
+## Security
+
+Report a vulnerability privately via [GitHub Security Advisories](https://github.com/dakshgajjar/opencode-sro/security/advisories/new). See [SECURITY.md](SECURITY.md) for what counts as in scope, and for the trust boundaries that are load-bearing by design.
+
 ## Scope
 
 Authorized research only: bug bounty programs, CTFs, security labs, defensive
