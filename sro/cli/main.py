@@ -130,7 +130,12 @@ def _emit_incomplete(session: Session, engagement: Any, manifest: Any) -> int:
 
 def cmd_import(args: argparse.Namespace) -> int:
     session = _session(args)
+    # Relative paths resolve against the workspace, not the shell's cwd. The
+    # plugin invokes the CLI with an explicit --root, so a brief named relative
+    # to the project would otherwise be looked up somewhere else entirely.
     path = Path(args.path)
+    if not path.is_absolute():
+        path = session.config.data_dir / path
     if not path.exists():
         raise SROError(f"brief not found: {path}")
     manifest = session.import_brief(str(path), provider=args.provider or "")

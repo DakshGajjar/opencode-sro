@@ -83,3 +83,41 @@ def test_repository_does_not_ship_development_state() -> None:
     tracked_ignore = (REPO / ".gitignore").read_text(encoding="utf-8")
     for entry in ("engagements/", "evidence/", "reports/", "audit/", "node_modules", ".venv/"):
         assert entry in tracked_ignore, entry
+
+
+def test_readme_promises_only_commands_that_exist() -> None:
+    """The README is the install instructions, so a command it names has to
+    exist. `sro doctor` was documented for a while before anything implemented
+    it, which is the worst way for a first-time user's install to fail."""
+    import re
+
+    readme = (REPO / "assets" / "README.md").read_text(encoding="utf-8")
+    installer = (REPO / "bin" / "sro-install-assets.mjs").read_text(encoding="utf-8")
+
+    # Subcommands the README tells a user to run via npx.
+    for command in set(re.findall(r"npx opencode-sro (\S+)", readme)):
+        assert f'command === "{command}"' in installer, f"README names `npx opencode-sro {command}`, which the installer does not implement"
+        assert f'"{command}"' in installer, command
+
+    # The package must actually expose the binary the README invokes.
+    assert PACKAGE["bin"]["opencode-sro"] == "bin/sro-install-assets.mjs"
+    assert "bin/" in PACKAGE["files"]
+    assert "examples/" in PACKAGE["files"], "README writes examples/practice-brief.json to stdout"
+    assert (REPO / "examples" / "practice-brief.json").exists()
+
+
+def test_installer_does_not_clobber_user_edits_by_default() -> None:
+    installer = (REPO / "bin" / "sro-install-assets.mjs").read_text(encoding="utf-8")
+    assert "yours is newer" in installer
+    assert "--force" in installer
+    # And it must be a dry run first-class, not an afterthought.
+    assert "dryRun" in installer
+
+
+def test_installer_prints_help_without_installing() -> None:
+    """`--help` must not fall through to the default subcommand and write files."""
+    installer = (REPO / "bin" / "sro-install-assets.mjs").read_text(encoding="utf-8")
+    help_check = installer.index("flags.help")
+    dispatch = installer.index('if (command === "install-assets")')
+    assert help_check < dispatch, "help must be handled before the default command runs"
+    assert 'const command = flags.command ?? "install-assets"' in installer

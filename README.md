@@ -45,7 +45,7 @@ Requires **Python 3.11+**. The plugin is a thin bridge; the authorization
 boundary is a Python package that ships with it.
 
 ```bash
-# 1. plugin
+# 1. the plugin
 opencode plugin add opencode-sro
 
 # 2. agents, commands and instructions
@@ -53,9 +53,12 @@ npx opencode-sro install-assets
 ```
 
 Step 2 copies `assets/` into `~/.config/opencode/{agents,commands,instructions}`
-and adds the five instruction files to your `opencode.json` `instructions[]`.
+and adds the instruction files to your `opencode.json` `instructions[]`.
 The plugin cannot install these itself: OpenCode loads them from config
 directories at startup, not from a plugin module.
+
+Preview it first with `--dry-run`. It will not overwrite a file of yours that is
+newer than the one it ships; `--force` overrides that.
 
 If your Python is not on `PATH` as `python3`:
 
@@ -71,8 +74,6 @@ npx opencode-sro example > brief.json    # synthetic, .test TLD only
 opencode
 ```
 
-Then paste: `load the brief in brief.json using bugcrowd`
-
 The practice brief contains a prompt injection, a wildcard that conflicts with
 an exclusion, an out-of-scope third party, and a private range — so every rule
 has something to bite on.
@@ -80,13 +81,15 @@ has something to bite on.
 ## Verify your install
 
 ```bash
-sro doctor
+npx opencode-sro example > brief.json
+opencode
 ```
 
-Checks Python, the control plane, and the installed assets. If a tool returns a
-message about a missing control plane, the Python package did not arrive with
-the plugin; set `SRO_PYTHON_PATH` to the directory containing
-`sro/core/scope.py`.
+> load the brief in brief.json using bugcrowd
+
+If a tool returns a message about a missing control plane, the Python package
+did not arrive with the plugin. Set `SRO_PYTHON_PATH` to the directory that
+contains `sro/core/scope.py`.
 
 ## Optional: read-only platform credentials
 

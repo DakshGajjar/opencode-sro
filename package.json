@@ -23,13 +23,16 @@
     "dist/",
     "sro/",
     "assets/",
+    "bin/",
+    "examples/",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "bun build .opencode/plugins/sro-plugin.ts --outdir dist --target node --format esm --external @opencode-ai/plugin",
-    "test": "python3 -m pytest ../tests -q",
-    "prepublishOnly": "bun run build && python3 -c \"import compileall,sys; sys.exit(0 if compileall.compile_dir('sro', quiet=1) else 1)\""
+    "test": "python3 -m pytest tests -q",
+    "prepublishOnly": "bun run build && python3 -m compileall -q sro && node --check bin/sro-install-assets.mjs",
+    "lint": "python3 -m compileall -q sro && node --check bin/sro-install-assets.mjs"
   },
   "dependencies": {
     "@opencode-ai/plugin": "^1.18.0"
@@ -78,5 +81,8 @@
       "python": ">=3.11",
       "notes": "The plugin is a thin bridge. The authorization boundary is a Python package that ships with it, so there is no network path from the model to a scope or policy decision."
     }
+  },
+  "bin": {
+    "opencode-sro": "bin/sro-install-assets.mjs"
   }
 }

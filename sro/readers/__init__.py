@@ -38,7 +38,7 @@ def detect_provider(source: str) -> str | None:
     if "://" in text:
         host = (urlsplit(text).hostname or "").lower()
     elif any(fragment in text for fragment, _ in HOST_HINTS):
-        # Scheme-less authority, e.g. "bugcrowd.com/engagements/tesla".
+        # Scheme-less authority, e.g. "bugcrowd.com/engagements/acme".
         host = text.split("/", 1)[0]
     else:
         return None
