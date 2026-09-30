@@ -1,0 +1,82 @@
+{
+  "name": "opencode-sro",
+  "version": "0.1.0",
+  "description": "Scope-aware, policy-enforced security research harness for OpenCode. Reads bug bounty engagements without credentials, blocks out-of-scope targets in code, separates hypotheses from verified findings, and never submits to a platform.",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "security",
+    "bug-bounty",
+    "pentesting",
+    "scope",
+    "bugcrowd",
+    "hackerone",
+    "intigriti"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist/",
+    "sro/",
+    "assets/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bun build .opencode/plugins/sro-plugin.ts --outdir dist --target node --format esm --external @opencode-ai/plugin",
+    "test": "python3 -m pytest ../tests -q",
+    "prepublishOnly": "bun run build && python3 -c \"import compileall,sys; sys.exit(0 if compileall.compile_dir('sro', quiet=1) else 1)\""
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.18.0"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "opencode": {
+    "_comment": "Metadata for the opencode.cafe listing. The plugin cannot ship agents, commands or instructions itself, so those are installed into ~/.config/opencode/ by the README instructions; this block documents the surface a user gets.",
+    "provides": {
+      "plugin": "dist/index.js",
+      "agents": [
+        "sro",
+        "researcher",
+        "recon",
+        "web",
+        "api",
+        "ad",
+        "cloud",
+        "code",
+        "verifier",
+        "reporter"
+      ],
+      "commands": [
+        "engagement",
+        "scope",
+        "evidence",
+        "findings",
+        "model",
+        "agent",
+        "policy",
+        "status",
+        "review",
+        "activate",
+        "load"
+      ],
+      "instructions": [
+        "SRO.md",
+        "SCOPE.md",
+        "EVIDENCE.md",
+        "SAFETY.md",
+        "PROVIDERS.md"
+      ]
+    },
+    "requires": {
+      "python": ">=3.11",
+      "notes": "The plugin is a thin bridge. The authorization boundary is a Python package that ships with it, so there is no network path from the model to a scope or policy decision."
+    }
+  }
+}

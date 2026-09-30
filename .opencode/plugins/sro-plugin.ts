@@ -20,9 +20,14 @@
 
 import { type Plugin, tool } from "@opencode-ai/plugin"
 import { spawn } from "node:child_process"
+import { existsSync } from "node:fs"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 
 const SRO_TIMEOUT_MS = 120_000
+
+/** Interpreter override, for a Python that is not on the default name. */
+const PYTHON = process.env.SRO_PYTHON || "python3"
 
 type SroResult = {
   code: number
@@ -37,18 +42,63 @@ export type SroBridge = {
 }
 
 /**
+ * Locate the SRO Python control plane.
+ *
+ * The plugin is a thin bridge; every security decision lives in the Python
+ * package, which has to travel with the plugin. There are three layouts this
+ * has to survive:
+ *
+ *   1. installed from a marketplace / npm, where `sro/` sits next to the plugin
+ *   2. a clone of the SRO repository, where `sro/` is in the project root
+ *   3. a split install, where the operator points at it with SRO_PYTHON_PATH
+ *
+ * Resolution order is explicit override, then the package directory, then the
+ * workspace. The workspace is last on purpose: a workspace that happens to
+ * contain a directory called `sro` must not be able to shadow the shipped
+ * control plane, because that would put the authorization boundary under the
+ * control of whatever is in the user's project.
+ */
+function resolveControlPlane(worktree: string): { root: string; source: string } | { error: string } {
+  const isControlPlane = (dir: string) => existsSync(path.join(dir, "sro", "core", "scope.py"))
+
+  const override = process.env.SRO_PYTHON_PATH
+  if (override) {
+    if (isControlPlane(override)) return { root: override, source: "SRO_PYTHON_PATH" }
+    return {
+      error:
+        `SRO_PYTHON_PATH is set to ${override} but no SRO control plane was found there. ` +
+        "It must be the directory containing sro/core/scope.py.",
+    }
+  }
+
+  // src/ when built, or the plugin directory when running from source.
+  const here = path.dirname(fileURLToPath(import.meta.url))
+  for (const candidate of [here, path.join(here, ".."), path.join(here, "..", "..")]) {
+    if (isControlPlane(candidate)) return { root: candidate, source: "package" }
+  }
+
+  if (isControlPlane(worktree)) return { root: worktree, source: "workspace" }
+
+  return {
+    error:
+      "SRO could not find its Python control plane (sro/core/scope.py). " +
+      "The plugin is only a bridge; the package that enforces scope and policy must be " +
+      "installed alongside it. Reinstall the plugin, or set SRO_PYTHON_PATH to the directory " +
+      "containing sro/core/scope.py.",
+  }
+}
+
+/**
  * Invoke the SRO CLI. Every exit code carries meaning:
  *   0 ok, 2 policy denied, 3 needs confirmation, 4 usage error
  * so the plugin renders the right message rather than guessing.
  */
 function makeBridge(root: string): SroBridge {
-  const cli = path.join(root, "sro", "cli", "main.py")
-
   const run = (args: string[], input?: unknown): Promise<SroResult> => {
     return new Promise((resolve) => {
-      const child = spawn("python3", ["-m", "sro.cli.main", "--root", root, ...args], {
+      const child = spawn(PYTHON, ["-m", "sro.cli.main", "--root", root, ...args], {
         cwd: root,
-        env: { ...process.env, PYTHONPATH: root },
+        env: { ...process.env, PYTHONPATH: [root, process.env.PYTHONPATH].filter(Boolean).join(":") },
       })
 
       let stdout = ""
@@ -102,8 +152,18 @@ function render(result: SroResult, fallback: string): string {
 }
 
 export const SroPlugin: Plugin = async ({ directory, worktree }) => {
-  const root = worktree || directory
-  const bridge = makeBridge(root)
+  const workspace = worktree || directory
+  const located = resolveControlPlane(workspace)
+
+  // A plugin that cannot find its control plane must not silently appear to
+  // work. Every tool returns the same actionable message, so the researcher
+  // learns what is wrong from whichever tool they happened to call first.
+  const bridge: SroBridge = "error" in located
+    ? {
+        run: async () => ({ code: 4, stdout: "", stderr: located.error, json: { error: located.error } }),
+        context: () => "",
+      }
+    : makeBridge(located.root)
 
   const sro = {
     /**

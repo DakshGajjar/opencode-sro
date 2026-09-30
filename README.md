@@ -1,189 +1,149 @@
-# SRO — Security Research Orchestrator
+# opencode-sro
 
-An OpenCode-native harness for authorized security research: bug-bounty
-programs, CTFs, security labs, defensive engineering and incident response.
+A security research control plane for OpenCode. It reads bug bounty engagements,
+**enforces scope and policy in code rather than in a prompt**, separates
+hypotheses from verified findings, and cannot submit to a bounty platform.
 
-SRO is not an AI that decides what to attack. It is a **security control plane**
-that knows which engagement you are working under, what is in scope, what the
-program's rules forbid, which tool may run, and what evidence exists — and it
-enforces all of that in code rather than in a prompt.
+The premise: an LLM should be good at reasoning about security and bad at
+deciding what it is allowed to touch. SRO takes the second job.
+
+## What it does
 
 ```
-USER
-  ↓  security context
-ENGAGEMENT READER      read-only, zero-credential by default
-  ↓
-SCOPE MANIFEST        candidate; not yet active
-  ↓  explicit researcher confirmation
-SECURITY AGENT         @web @api @recon @cloud @ad @code
-  ↓
-POLICY ENGINE          deterministic: ALLOW / DENY / ASK
-  ↓
-TOOL BROKER            closed catalog of typed tools
-  ↓
-SECURITY TOOL
-  ↓
-EVIDENCE STORE         OBSERVED / INFERRED / HYPOTHESIS / VERIFIED
-  ↓
-VERIFIER               independent: CONFIRMED / REJECTED / INCONCLUSIVE
-  ↓
-REPORT                 written locally; never submitted
+/engagement  /scope  /evidence  /findings  /model  /agent  /policy
+/status      /review /activate  /load
 ```
 
-## What makes it different
-
-| Property | How it is enforced | Test |
-|---|---|---|
-| An LLM never decides authorization | `ScopeEngine` is pure Python; no model call exists in the module | `test_scope.py` |
-| Platform content is never trusted | fenced before it reaches a model; policy reads structured fields, not prose | `test_prompt_injection.py` |
-| The connector cannot write | the transport has no method that accepts a verb; readers import no vendor SDK | `test_write_protection.py` |
-| A hypothesis is not a finding | `record_observation` has no `status` parameter | `test_evidence.py` |
-| Researcher and verifier are separate | only `sro_verify` writes a verdict, and it needs cited evidence | `test_evidence.py` |
-| Sensitive data stays local | sensitivity gate overrides every routing decision | `test_routing.py` |
-| SRO never submits to a platform | no submission code exists anywhere in the package | `test_write_protection.py`, `test_mcp.py` |
-
-390 tests. Standard library only at runtime.
-
-## Quick start
+Agents: `@sro` `@researcher` `@recon` `@web` `@api` `@ad` `@cloud` `@code`
+`@verifier` `@reporter`
 
 ```bash
-$ ./bin/sro load https://bugcrowd.com/engagements/example
-
-Reading engagement...
-
-✓ Public engagement found
-✓ Program identified
-✓ Scope extracted
-✓ Exclusions extracted
-✓ Testing rules extracted
-
-No credentials required.
-
-14 candidate targets
-6 exclusions
-8 restrictions
-
+> load https://bugcrowd.com/engagements/example
+✓ Public engagement found. No credentials required.
+14 candidate targets, 6 exclusions, 8 restrictions
 ⚠ Engagement is NOT ACTIVE.
 
-$ ./bin/sro review          # inspect what was extracted
-$ ./bin/sro activate        # your explicit confirmation
-$ ./bin/sro status
+> review          # inspect what was extracted
+> activate        # your explicit confirmation
+> @web inspect https://api.example.com/v1/me
 ```
 
-Exit codes carry meaning, so the tooling can branch on them:
-`0` ok, `2` policy denied, `3` needs confirmation, `4` usage error.
+## Why it is not a prompt
 
-## In OpenCode
+| Guarantee | How |
+|---|---|
+| An LLM cannot declare a target in scope | `scope.py` is pure Python; there is no model call in it |
+| Injected program text cannot change anything | program text is fenced and labelled untrusted before it reaches a model |
+| A hypothesis cannot become a finding | confirming requires cited observations; the store refuses otherwise |
+| A discovered host is not an authorized host | `UNKNOWN` is blocked, and cannot be configured to allow |
+| SRO cannot submit to a platform | the connector transport has no method that accepts an HTTP verb |
+| Sensitive data stays local | the routing gate tests the resolved model, not the route name |
+
+## Install
+
+Requires **Python 3.11+**. The plugin is a thin bridge; the authorization
+boundary is a Python package that ships with it.
 
 ```bash
-cd /path/to/your/engagement
+# 1. plugin
+opencode plugin add opencode-sro
+
+# 2. agents, commands and instructions
+npx opencode-sro install-assets
+```
+
+Step 2 copies `assets/` into `~/.config/opencode/{agents,commands,instructions}`
+and adds the five instruction files to your `opencode.json` `instructions[]`.
+The plugin cannot install these itself: OpenCode loads them from config
+directories at startup, not from a plugin module.
+
+If your Python is not on `PATH` as `python3`:
+
+```bash
+export SRO_PYTHON=/usr/bin/python3.12
+```
+
+## Try it without touching anything real
+
+```bash
+mkdir -p ~/sro-playground && cd ~/sro-playground
+npx opencode-sro example > brief.json    # synthetic, .test TLD only
 opencode
 ```
 
-Then:
+Then paste: `load the brief in brief.json using bugcrowd`
 
-```
-> @sro load https://bugcrowd.com/engagements/example
-> @sro investigate authentication on api.example.com
-> @web inspect https://api.example.com/v1/me
-> @recon map the authorized attack surface
-> @verifier validate finding #4
-> @reporter generate a report for finding #4
-```
+The practice brief contains a prompt injection, a wildcard that conflicts with
+an exclusion, an out-of-scope third party, and a private range — so every rule
+has something to bite on.
 
-Slash commands: `/engagement` `/scope` `/evidence` `/findings` `/model`
-`/agent` `/policy` `/status` `/review` `/activate`
-
-Normal OpenCode work is unaffected. When SRO is not being used, nothing in this
-project changes opencode's behaviour.
-
-## Layout
-
-```
-sro/
-├── sro/core/            the control plane — all security logic lives here
-│   ├── scope.py         deterministic scope engine (IN_SCOPE/OUT_OF_SCOPE/UNKNOWN)
-│   ├── policy.py        policy engine, action allowlists, rate limiter
-│   ├── tools.py         tool catalog and the broker that gates every call
-│   ├── evidence.py      evidence store, epistemic status enforced structurally
-│   ├── verifier.py      independent verification
-│   ├── routing.py       local-first model router with the sensitivity gate
-│   ├── translator.py    natural language → structured objective
-│   ├── untrusted.py     prompt-injection detection and fencing
-│   ├── report.py        evidence-cited report generation
-│   ├── engagement.py    provider-neutral schema
-│   ├── session.py       load → review → activate state machine
-│   ├── config.py        sro.json (secrets are never stored here)
-│   └── audit.py         append-only audit log
-├── sro/readers/         dumb readers: read, return data, nothing else
-│   ├── base.py          GET-only transport, host allowlist
-│   ├── bugcrowd/        public scraping + optional read-only API
-│   ├── hackerone/       public scraping + read-only GraphQL
-│   └── intigriti/       import_only; no undocumented endpoints are guessed at
-├── sro/connectors/mcp/  read-only MCP server for the same readers
-├── sro/schemas/         JSON Schema for engagement, scope, evidence, finding
-├── sro/cli/             the single interface between Python and the plugin
-├── .opencode/
-│   ├── plugins/         sro-plugin.ts — thin bridge, no security logic
-│   ├── agents/          sro, researcher, recon, web, api, ad, cloud, code,
-│   │                    verifier, reporter
-│   ├── instructions/    SRO, SCOPE, EVIDENCE, SAFETY, PROVIDERS
-│   └── commands/        /engagement /scope /review /activate and friends
-├── engagements/         staged manifests (gitignored)
-├── evidence/            append-only evidence store (gitignored)
-└── reports/             generated reports (gitignored)
-```
-
-## Design notes
-
-**Why the policy engine is not a prompt.** A prompt says "please stay in scope".
-A function decides. If the model is wrong, tired or injected, the function still
-returns the same answer. That is the entire point of the project.
-
-**Why `UNKNOWN` is not a soft yes.** It blocks exactly like `OUT_OF_SCOPE` and
-additionally asks the researcher to resolve it. The one way out is
-`sro scope add <target>`, which records a human assertion. There is deliberately
-no configuration that turns `UNKNOWN` into an allow — the config parser rejects
-it.
-
-**Why exclusions always win.** A manifest that is wrong in the permissive
-direction is the dangerous failure mode. When an inclusion and an exclusion both
-match, the exclusion applies and the decision carries a `conflict` flag so the
-researcher can see the program is self-contradictory and go ask.
-
-**Why the readers are "dumb".** A reader reads and returns data. It does not
-reason about security, decide authorization, run tools, or interact with bounty
-workflows. `ReadOnlyTransport` has no method that accepts an HTTP verb, every
-request is pinned to the provider's host allowlist, and off-host redirects are
-refused. Writes are not discouraged — they are absent.
-
-**Why the plugin file is `sro-plugin.ts`.** `sro.ts` is silently dropped by the
-opencode plugin loader: the tools never register and no error is raised. This is
-pinned by `test_session.py::test_plugin_filename_is_not_sro_ts` so it cannot be
-rediscovered the hard way.
-
-## Adding a provider
-
-Implement a reader against `BaseReader`, normalise into `Engagement`, register it
-in `sro/readers/__init__.py`. Non-negotiable: use the inherited transport, add
-hosts to `default_hosts`, do not import a vendor SDK, do not define a method that
-accepts a verb or a GraphQL mutation, and report `writes=()` in your
-capabilities. `test_write_protection.py` enforces all of it.
-
-## Tests
+## Verify your install
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install pytest
-.venv/bin/python -m pytest tests/ -q
+sro doctor
 ```
 
-The suite never touches a live platform. Readers are exercised against captured
-payloads and a stubbed transport, so no test can generate traffic to a real
-program.
+Checks Python, the control plane, and the installed assets. If a tool returns a
+message about a missing control plane, the Python package did not arrive with
+the plugin; set `SRO_PYTHON_PATH` to the directory containing
+`sro/core/scope.py`.
+
+## Optional: read-only platform credentials
+
+SRO reads public program pages with **no credentials** — that is the normal path.
+For programs that gate their scope, configure a read-only token by naming where
+it lives. Never put the token in a config file or in chat.
+
+```json
+{ "providers": { "bugcrowd": {
+    "mode": "readonly",
+    "credentials": "environment",
+    "token_env": "BUGCROWD_API_TOKEN"
+} } }
+```
+
+The token is used for `GET` requests to the platform's API host only, and is
+never written to the manifest, the evidence store, a report or the audit log.
+
+## Configuration
+
+`sro.json` in your project root. Secrets never go here; the parser rejects any
+key that would hold one or enable a write.
+
+```json
+{
+  "providers": { "bugcrowd": { "mode": "public" } },
+  "routing": { "allow_external": false },
+  "policy": { "unknown_scope": "deny", "rate_limits": { "per_host_per_minute": 20 } },
+  "scope": { "deny_private_networks": true }
+}
+```
+
+Useful settings for a lab or CTF:
+
+- `"scope": { "deny_private_networks": false }` — permits RFC1918 targets
+- `"scope": { "wildcard_includes_apex": false }` — `*.example.com` covers subdomains only
+- `"policy": { "unknown_scope": "ask" }` — prompt instead of refusing on unresolved targets
+
+## Privacy
+
+Local-first. Credentials, tokens, cookies, private source, internal IPs and
+unpublished findings route to a local model. External inference is off unless
+you set `routing.allow_external: true`, and even then a sensitive payload is
+redacted before egress or blocked.
+
+Engagement state, evidence and reports are written to `sro/../engagements`,
+`evidence/` and `reports/` in the project. They are gitignored by the example
+config; add them to yours if your project does not already.
 
 ## Scope
 
-This is for authorized research only. SRO enforces the engagement it is given;
-it cannot tell you whether you have permission, and it will not help you find a
-program to attack. Disclosure is yours to do: SRO writes the report to a file
-and has no capability to send it anywhere.
+Authorized research only: bug bounty programs, CTFs, security labs, defensive
+engineering, incident response. SRO enforces the engagement you give it. It
+cannot tell you whether you have permission, and it will not help you find a
+program to attack. Disclosure is yours: SRO writes the report to a file and has
+no capability to send it anywhere.
+
+## License
+
+MIT
