@@ -459,7 +459,7 @@ class Session:
         lines.append(f"  {len(engine.describe()['inclusion_rules'])} inclusion rule(s), "
                      f"{len(engine.describe()['exclusion_rules'])} exclusion rule(s)")
         lines.append("")
-        lines.append("Review:   sro review --full")
+        lines.append("Inspect:  sro review    (this is the full manifest)")
         lines.append("Activate: sro activate")
         lines.append("")
         lines.append("This manifest is NOT active. No request will be made until you confirm.")
