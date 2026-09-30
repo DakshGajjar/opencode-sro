@@ -171,3 +171,22 @@ def test_readme_does_not_send_users_to_a_directory_without_node_modules() -> Non
     assert "mkdir -p ~/sro-playground" not in readme
     assert "subdirectory" in readme
     assert "where you installed the package" in readme
+
+
+def test_publish_gate_does_not_depend_on_the_publishers_python() -> None:
+    """`npm test` used to call the system interpreter directly.
+
+    On a machine whose default python has no pytest — which is the default on a
+    fresh box, and was the case here — the publish gate could never pass. A
+    gate that fails for an unrelated reason gets skipped.
+    """
+    script = (REPO / "bin" / "run-tests.py").read_text(encoding="utf-8")
+    assert "import pytest" in script, "must probe for pytest, not assume it"
+    assert "SRO_PYTHON" in script
+    assert ".venv" in script
+    assert "No module named pytest" not in script, "the bare error is not actionable"
+    assert "npm publish" in script, "the failure must say what to do next"
+
+    assert PACKAGE["scripts"]["test"] == "python3 bin/run-tests.py"
+    assert PACKAGE["scripts"]["prepublishOnly"] == "bun run build && npm run lint && npm test"
+    assert (REPO / "bin" / "run-tests.py").exists()

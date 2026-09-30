@@ -32,7 +32,7 @@
   ],
   "scripts": {
     "build": "bun build .opencode/plugins/sro-plugin.ts --outfile dist/index.js --target node --format esm --external @opencode-ai/plugin",
-    "test": "python3 -m pytest tests -q",
+    "test": "python3 bin/run-tests.py",
     "prepublishOnly": "bun run build && npm run lint && npm test",
     "lint": "python3 bin/lint-python.py && node --check bin/sro-install-assets.mjs"
   },
