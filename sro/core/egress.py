@@ -490,12 +490,12 @@ class Transport:
                 if self._is_redirect(response.status):
                     response.headers.setdefault(
                         "x-sro-note",
-                        f"redirect to {response.headers.get('location', '?')} not followed: "
+                        f"redirect to {_header(response.headers, 'location') or 'an unnamed location'} not followed: "
                         "each hop needs its own scope decision",
                     )
                 return response
 
-            location = response.headers.get("location", "")
+            location = _header(response.headers, "location") or ""
             redirects.append(location)
             current = self._redirect_target(current, location)
 
@@ -694,6 +694,20 @@ def system_nameservers(path: str = _RESOLV_CONF) -> list[str]:
     return servers
 
 
+def _header(headers: Mapping[str, str], name: str) -> str | None:
+    """Case-insensitive header lookup.
+
+    RFC 9110 says field names are case-insensitive, and real servers use every
+    casing there is. Our dict preserves what the peer sent, so 
+    silently misses a , and a redirect then looks like one with no target.
+    """
+    lowered = name.lower()
+    for key, value in headers.items():
+        if key.lower() == lowered:
+            return value
+    return None
+
+
 def _dns_exchange(
     query: bytes,
     nameserver: str,
@@ -845,5 +859,289 @@ def zone_accepts_arbitrary_names(
             f"program's own hosts — and those tenants hold other people's data. Scope the "
             f"program's hosts explicitly instead, and record the exclusion of other tenants "
             f"as a human obligation, because no rule here will enforce it."
+        ),
+    }
+
+
+# --- TLS inspection -------------------------------------------------------
+#
+# Inspection is not verification, and the difference is the whole tool.
+# `getpeercert()` returns a parsed dict only when the chain validated, so using
+# it would make the tool useless for its main purpose: a certificate that is
+# expired, self-signed, or issued for a different name is exactly what a
+# researcher opened it to find, and it would report nothing.
+#
+# So this connects with CERT_NONE and reads the DER itself. That is safe because
+# nothing here trusts the certificate — it is parsed as bytes and reported as
+# facts about a third party's host. What still holds is the pinning: the address
+# is resolved once, refused if private, and dialled directly, so an unverified
+# handshake is not an unconstrained one.
+#
+# The parser is deliberately small. It extracts what a researcher reads off a
+# certificate and nothing more — no chain building, no path validation, no
+# signature checking. Anything it cannot extract it reports as absent rather than
+# guessing.
+
+_DER_TIME_TAGS = {0x17: "utc", 0x18: "generalized"}
+
+
+def _der_read(data: bytes, offset: int) -> tuple[int, bytes, int, int | None]:
+    """One TLV. Returns (next_offset, tag, content_offset, content_length)."""
+    if offset + 2 > len(data):
+        raise ValueError("truncated DER header")
+    tag = data[offset]
+    length_byte = data[offset + 1]
+    cursor = offset + 2
+    if length_byte & 0x80:
+        count = length_byte & 0x7F
+        if count == 0 or count > 4 or cursor + count > len(data):
+            raise ValueError("unsupported or truncated DER length")
+        length = int.from_bytes(data[cursor : cursor + count], "big")
+        cursor += count
+    else:
+        length = length_byte
+    return cursor + length, tag, cursor, length
+
+
+def _der_children(data: bytes, content: bytes, start: int, length: int) -> list[tuple[int, bytes, int, int]]:
+    """Every TLV inside a constructed value."""
+    out: list[tuple[int, bytes, int, int]] = []
+    offset = start
+    end = start + length
+    while offset < end:
+        next_offset, tag, content_offset, content_length = _der_read(data, offset)
+        out.append((next_offset, tag, content_offset, content_length))
+        offset = next_offset
+    return out
+
+
+def _der_time(tag: int, raw: bytes) -> str:
+    text = raw.decode("ascii", errors="replace").strip()
+    if tag == 0x17:  # UTCTime, 2-digit year
+        if len(text) >= 11:
+            century = "20" if int(text[:2]) < 50 else "19"
+            return f"{century}{text[:2]}-{text[2:4]}-{text[4:6]}T{text[6:8]}:{text[8:10]}:{text[10:12]}Z"
+        return text
+    if tag == 0x18 and len(text) >= 12:  # GeneralizedTime, 4-digit year
+        return f"{text[:4]}-{text[4:6]}-{text[6:8]}T{text[8:10]}:{text[10:12]}:{text[12:14]}Z"
+    return text
+
+
+#: OIDs that matter to a reader looking at a certificate.
+_OID_COMMON_NAME = b"\x55\x04\x03"
+_OID_SUBJECT_ALT_NAME = b"\x55\x1d\x11"
+_OID_BASIC_CONSTRAINTS = b"\x55\x1d\x13"
+
+
+def _der_common_names(data: bytes, name_start: int, name_length: int) -> list[str]:
+    """Common names out of an X.501 Name, in order."""
+    names: list[str] = []
+    for _, tag, start, length in _der_children(data, data, name_start, name_length):
+        if tag != 0x31:  # RDN SET
+            continue
+        for _, atv_tag, atv_start, atv_length in _der_children(data, data, start, length):
+            if atv_tag != 0x30:
+                continue
+            parts = _der_children(data, data, atv_start, atv_length)
+            if len(parts) != 2:
+                continue
+            oid_start, oid_length = parts[0][2], parts[0][3]
+            if data[oid_start : oid_start + oid_length] != _OID_COMMON_NAME:
+                continue
+            value_start, value_length = parts[1][2], parts[1][3]
+            names.append(data[value_start : value_start + value_length].decode("utf-8", "replace"))
+    return names
+
+
+def parse_certificate(der: bytes) -> dict[str, Any]:
+    """The fields a researcher reads off a certificate.
+
+    No chain building, no signature verification, no policy evaluation. This is
+    a reader for one certificate's fields, and it says so rather than implying it
+    validated anything.
+    """
+    import base64
+    import hashlib
+
+    try:
+        _, cert_tag, cert_start, cert_length = _der_read(der, 0)
+        if cert_tag != 0x30:
+            raise ValueError("certificate is not a SEQUENCE")
+        top = _der_children(der, der, cert_start, cert_length)
+        if not top:
+            raise ValueError("certificate has no TBSCertificate")
+        _, _, tbs_start, tbs_length = top[0]
+
+        fields = _der_children(der, der, tbs_start, tbs_length)
+        cursor = 0
+        if fields and fields[0][1] == 0xA0:  # [0] version
+            cursor += 1
+
+        # serialNumber, signature, issuer, validity, subject
+        validity = None
+        issuer_cns: list[str] = []
+        subject_cns: list[str] = []
+        offset = cursor + 3  # skip serial, signature, issuer
+        if offset < len(fields):
+            _, _, start, length = fields[offset]
+            kids = _der_children(der, der, start, length)
+            if len(kids) == 2:
+                validity = {
+                    "not_before": _der_time(kids[0][1], der[kids[0][2] : kids[0][2] + kids[0][3]]),
+                    "not_after": _der_time(kids[1][1], der[kids[1][2] : kids[1][2] + kids[1][3]]),
+                }
+        offset += 1
+        if offset < len(fields):
+            _, _, start, length = fields[offset]
+            subject_cns = _der_common_names(der, start, length)
+        offset += 1
+        if cursor + 2 < len(fields):
+            _, _, start, length = fields[cursor + 2]
+            issuer_cns = _der_common_names(der, start, length)
+
+        sans: list[str] = []
+        for _, ext_tag, ext_start, ext_length in fields[offset:]:
+            if ext_tag != 0xA3:
+                continue
+            for _, seq_tag, seq_start, seq_length in _der_children(der, der, ext_start, ext_length):
+                if seq_tag != 0x30:
+                    continue
+                for _, extn_tag, extn_start, extn_length in _der_children(der, der, seq_start, seq_length):
+                    if extn_tag != 0x30:
+                        continue
+                    parts = _der_children(der, der, extn_start, extn_length)
+                    if not parts:
+                        continue
+                    oid_start, oid_length = parts[0][2], parts[0][3]
+                    oid = der[oid_start : oid_start + oid_length]
+                    value = parts[-1]
+                    if oid == _OID_SUBJECT_ALT_NAME and value[1] == 0x04:
+                        sans.extend(_der_san_entries(der, value[2], value[3]))
+    except (ValueError, IndexError) as exc:
+        return {
+            "parsed": False,
+            "error": f"could not parse the certificate: {exc}",
+            "sha256_fingerprint": hashlib.sha256(der).hexdigest(),
+            "der_bytes": len(der),
+        }
+
+    return {
+        "parsed": True,
+        "subject_cn": subject_cns[0] if subject_cns else "",
+        "subject_cn_all": subject_cns,
+        "issuer_cn": issuer_cns[0] if issuer_cns else "",
+        "sans": sorted(set(sans)),
+        "validity": validity or {},
+        "sha256_fingerprint": hashlib.sha256(der).hexdigest(),
+        "der_bytes": len(der),
+        "der_base64": base64.b64encode(der).decode("ascii"),
+    }
+
+
+#: GeneralName context tags. dNSName is [2] IMPLICIT IA5String; iPAddress is [7]
+#: IMPLICIT OCTET STRING. They are not the same tag, and reading an IP address as
+#: [2] produced one unreadable blob per extension.
+_DNS_NAME_TAG = 0x82
+_IP_ADDRESS_TAG = 0x87
+
+
+def _der_san_entries(data: bytes, start: int, length: int) -> list[str]:
+    """DNS and IP entries from a SubjectAltName extension.
+
+    The extension's OCTET STRING wraps a GeneralNames SEQUENCE, so the inner
+    sequence has to be unwrapped before its entries are readable. Reading the
+    OCTET STRING's content as though it were the entry list yields a single blob
+    containing the whole extension, which is what happened first.
+    """
+    import ipaddress
+
+    names: list[str] = []
+    for _, tag, inner_start, inner_length in _der_children(data, data, start, length):
+        if tag != 0x30:
+            continue
+        for _, entry_tag, entry_start, entry_length in _der_children(
+            data, data, inner_start, inner_length
+        ):
+            raw = data[entry_start : entry_start + entry_length]
+            try:
+                if entry_tag == _IP_ADDRESS_TAG and len(raw) == 4:
+                    names.append(str(ipaddress.IPv4Address(raw)))
+                elif entry_tag == _IP_ADDRESS_TAG and len(raw) == 16:
+                    names.append(str(ipaddress.IPv6Address(raw)))
+                elif entry_tag == _DNS_NAME_TAG:
+                    names.append(raw.decode("ascii", errors="replace"))
+            except ValueError:
+                continue
+    return names
+
+
+def inspect_tls(
+    destination: PinnedDestination,
+    *,
+    limits: EgressLimits | None = None,
+) -> dict[str, Any]:
+    """Handshake against a pinned address and read what the peer presents.
+
+    No verification, deliberately: an expired or self-signed certificate has to
+    be reportable. The pinning is unaffected, because the address was resolved
+    and refused as private before this is called.
+    """
+    limits = limits or EgressLimits()
+    family = socket.AF_INET6 if ipaddress.ip_address(destination.address).version == 6 else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    sock.settimeout(limits.connect_timeout)
+    try:
+        sock.connect((destination.address, destination.port))
+    except OSError as exc:
+        sock.close()
+        raise DestinationRefused(
+            f"cannot connect to {destination.authority}: {exc}"
+        ) from exc
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    # Verification off, hostname checking off. This reads a certificate; it does
+    # not decide whether to trust it, and pretending otherwise would make the tool
+    # blind to exactly the cases it exists to find.
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+
+    try:
+        with context.wrap_socket(sock, server_hostname=destination.host) as tls:
+            tls.settimeout(limits.read_timeout)
+            cipher = tls.cipher() or ()
+            version = tls.version()
+            der = tls.getpeercert(binary_form=True)
+    except (ssl.SSLError, OSError) as exc:
+        sock.close()
+        raise DestinationRefused(f"TLS handshake with {destination.authority} failed: {exc}") from exc
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    if not der:
+        return {
+            "handshake": "succeeded",
+            "protocol": version,
+            "cipher": cipher[0] if cipher else "",
+            "certificate": None,
+            "note": "the peer presented no certificate, so there is nothing to read",
+        }
+
+    return {
+        "handshake": "succeeded",
+        "protocol": version,
+        "cipher": cipher[0] if cipher else "",
+        "cipher_details": {
+            "protocol": cipher[2] if len(cipher) > 2 else "",
+            "bits": cipher[4] if len(cipher) > 4 else "",
+        },
+        "verified": False,
+        "certificate": parse_certificate(der),
+        "note": (
+            "Presented as-is and not verified. An expired, self-signed or mismatched "
+            "certificate is exactly what this is for, so nothing here decides whether to "
+            "trust it. Reported facts only: no chain was built and no signature checked."
         ),
     }

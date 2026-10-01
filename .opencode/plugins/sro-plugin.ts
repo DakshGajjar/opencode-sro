@@ -284,6 +284,52 @@ export const SroPlugin: Plugin = async ({ directory, worktree }) => {
       },
     }),
 
+    sro_http: tool({
+      description:
+        "One GET or HEAD against an in-scope target. The destination is taken from " +
+        "the url and pinned to a resolved address; private and metadata ranges are " +
+        "refused, redirects are refused rather than followed, and the body comes back " +
+        "fenced as third-party text. There is no POST, no body, and no way to follow a " +
+        "redirect — a Location header means the request stopped there.",
+      args: {
+        url: tool.schema.string().describe("absolute url on an in-scope host"),
+        method: tool.schema.enum(["GET", "HEAD"]).optional().describe("defaults to GET"),
+      },
+      async execute(args) {
+        return render(
+          await bridge.run(["--json", "execute"], {
+            tool: "http_request",
+            parameters: { url: args.url, method: args.method ?? "GET" },
+            agent: "web",
+          }),
+          "request refused",
+        )
+      },
+    }),
+
+    sro_tls: tool({
+      description:
+        "Read the certificate an in-scope host presents: subject, issuer, SANs, " +
+        "validity, fingerprint, protocol and cipher. The handshake does NOT verify, " +
+        "deliberately — an expired, self-signed or wrong-name certificate is what " +
+        "this is for — and the address is still pinned, so an unverified handshake is " +
+        "not an unconstrained one. Nothing here is trusted, validated or chained.",
+      args: {
+        host: tool.schema.string().describe("in-scope hostname"),
+        port: tool.schema.number().optional().describe("defaults to 443"),
+      },
+      async execute(args) {
+        return render(
+          await bridge.run(["--json", "execute"], {
+            tool: "tls_inspect",
+            parameters: { host: args.host, port: args.port ?? 443 },
+            agent: "recon",
+          }),
+          "inspection refused",
+        )
+      },
+    }),
+
     sro_code_search: tool({
       description:
         "Search the local source tree for a pattern, or run the built-in sink rules when " +

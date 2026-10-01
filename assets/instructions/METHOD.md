@@ -77,6 +77,24 @@ internal address, or a rebindable record.
 SRO noticed and did not connect; those are different things, and the difference
 is the whole reason the tool labels its output.
 
+### 2c. Inspect the certificate
+
+```
+sro_execute   tool=tls_inspect
+```
+
+Gate: `IN_SCOPE`, then the transport.
+
+Reports subject, issuer, SANs, validity, fingerprint, protocol and cipher. The
+handshake does **not** verify, on purpose: an expired, self-signed or
+wrong-name certificate is what you opened it for, and a verifying handshake
+reports nothing for exactly those cases. The address is still pinned, so an
+unverified handshake is not an unconstrained one.
+
+**Failure mode:** reading a clean parse as a clean certificate. It parsed a
+certificate someone presented; nothing was trusted, no chain was built, and no
+signature was checked. `verified` is `false` in the result, every time.
+
 ### 3. Read — the only way to get evidence without sending anything
 
 ```
@@ -130,7 +148,25 @@ at the time rather than what the result turned out to be.
 **Failure mode:** the retrofitted expectation. This is the single most common
 way a false positive becomes a confirmed finding.
 
-### 5. Test — you do this part, by hand
+### 5. Test — GET and HEAD are yours to send, anything else is not
+
+```
+sro_execute   tool=http_request
+```
+
+Gate: `IN_SCOPE`, then the transport. One request, GET or HEAD only, to the host
+in the `url`. The destination is pinned to a resolved address, redirects are
+refused rather than followed, and the response body comes back fenced as
+third-party text.
+
+So this step splits, and the split is the discipline:
+
+- **GET and HEAD** — you send them. Then record the result with
+  `sro_record_evidence`, quoting the real request and the real response.
+- **Anything with a body, any credential, any state change** — the researcher
+  sends it, by hand, and tells you what happened. `auth_session_test` and
+  `parameter_probe` are declared and unimplemented, so there is no way for you to
+  reach those anyway, and no reason to want a way.
 
 Whatever comes back is recorded as an `OBSERVED` carrying its evidence id. That
 id is what a finding will have to cite.
@@ -237,13 +273,14 @@ failure to be minimised; it is the information they need.
 
 ## What this method cannot do
 
-Sends no requests. Inspects no TLS. Enumerates nothing, passively or actively.
-Loads no authenticated session. Fetches no schema. Brute-forces no parameters.
+Enumerates nothing, passively or actively. Loads no authenticated session.
+Fetches no schema. Brute-forces no parameters. Submits a POST. Follows a redirect
+without being asked. Builds a TLS chain.
 
-Declared and not implemented: `http_request`, `tls_inspect`, `api_schema_fetch`,
-`auth_session_test`, `parameter_probe`, `browser_navigate`, `cloud_asset_query`,
-`ad_query`. Calling one returns a refusal naming the tools that do work. Ask
-`sro_capabilities` rather than guessing, and check the `implemented` flag.
+Declared and not implemented: `api_schema_fetch`, `auth_session_test`,
+`parameter_probe`, `browser_navigate`, `cloud_asset_query`, `ad_query`. Calling
+one returns a refusal naming the tools that do work. Ask `sro_capabilities`
+rather than guessing, and check the `implemented` flag.
 
 `dns_resolve` is the one exception and it earns its place: it resolves names and
 classifies every address they point at, which is how you learn that a public

@@ -412,12 +412,13 @@ def test_no_handler_can_obtain_the_resolver_or_a_limit_override() -> None:
     assert "limits" in public  # read-only, and frozen
 
 
-def test_only_dns_resolve_is_registered_as_a_network_tool() -> None:
+def test_only_the_approved_network_tools_are_registered() -> None:
     """`dns_resolve` is the one approved tool, and it shipped on the strength of
     a verdict written first. `test_egress_review.py` owns the verdicts; this
     asserts the code agrees with them, so a second handler cannot appear without
     one of the two files being wrong."""
     from sro.handlers import HANDLERS, NOT_IMPLEMENTED
 
-    network = set(NOT_IMPLEMENTED) | {"dns_resolve"}
-    assert HANDLERS.keys() & network == {"dns_resolve"}, sorted(HANDLERS.keys() & network)
+    shipped = {"dns_resolve", "http_request", "tls_inspect"}
+    network = set(NOT_IMPLEMENTED) | shipped
+    assert set(HANDLERS) & network == shipped, sorted(set(HANDLERS) & network)

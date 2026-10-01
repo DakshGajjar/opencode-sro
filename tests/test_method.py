@@ -83,8 +83,37 @@ def test_the_method_states_the_capability_limit_that_is_true() -> None:
     # and the reverse: a shipped tool must not be described as unavailable
     for tool in BROKERED:
         assert f"{tool} is not installed" not in BODY
-    assert re.search(r"[Rr]esolves no DNS", BODY) is None, (
-        "METHOD.md says SRO cannot resolve DNS; dns_resolve now exists"
+
+
+@pytest.mark.parametrize(
+    "pattern,reason",
+    [
+        (r"[Rr]esolves no DNS", "dns_resolve now exists"),
+        (r"Sends no requests", "http_request now exists"),
+        (r"[Nn]o active reconnaissance", "dns_resolve and http_request exist"),
+        (r"Inspect(s)? no TLS", "tls_inspect now exists"),
+    ],
+)
+def test_a_capability_claim_that_is_no_longer_true_fails_the_test(pattern, reason) -> None:
+    """METHOD.md is the document a researcher plans a session from.
+
+    Every one of these phrases was true when written and becomes false the moment
+    a tool ships. A stale claim here is worse than an omission, because it is
+    relied on: it tells someone not to look for a capability that is sitting right
+    there, or that a step is impossible when it is one call away.
+    """
+    assert not re.search(pattern, BODY), f"METHOD.md still claims {pattern!r} — {reason}"
+
+
+def test_the_shipped_network_tools_are_named_in_the_method() -> None:
+    """When an approved network tool exists, the method has to say which and
+    what it may not do — the untrusted fence and the inability to act on a
+    rendered page are the parts that change how it must be used."""
+    for tool in ("dns_resolve", "http_request", "tls_inspect"):
+        assert tool in BODY, f"{tool} ships but METHOD.md never mentions it"
+
+    assert re.search(r"fence|third-party", BODY, re.I), (
+        "a tool that returns response bytes must be documented as fenced"
     )
 
 

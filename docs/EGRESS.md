@@ -7,10 +7,12 @@ This document is the gate. It exists because the fastest way to destroy the
 property SRO is built on is to add a network handler carelessly: one tool that
 connects to the wrong host turns a control plane into a suggestion.
 
-**Status: one tool is approved and shipped.** `dns_resolve` is implemented, on
-the strength of the verdicts below. The other eight are described here and none
-of them exists in code. Six tools are implemented in total: five local and read
-only, plus `dns_resolve`.
+**Status: all of tier 1 is shipped.** `dns_resolve`, `http_request` and
+`tls_inspect` are implemented, each on the strength of a verdict written before
+its handler. The six below are described here and none exists in code.
+
+Eight tools are implemented: five local and read-only, plus these three. Tier 2
+onward is unchanged and still blocked on decisions that are not about code.
 
 ## Why one review covers forty tools
 
@@ -116,11 +118,11 @@ cannot override, credentials as references resolved at the moment of use,
 response bodies fenced through `sro/core/untrusted.py`, and redirects refused by
 default with each hop re-pinned.
 
-**One tool is wired to it: `dns_resolve`.** The transport being present was the
-precondition, not the approval; the approval is the verdict above, written before
-the handler. `tests/test_egress.py` asserts that no *other* network tool has
-shipped, so the day one does, both this document and the code are asked to change
-in the same commit.
+**Three tools are wired to it.** The transport being present was the precondition,
+not the approval; each approval is the verdict above, written before its handler.
+`tests/test_egress.py` asserts that no *other* network tool has shipped, so the
+day one does, both this document and the code are asked to change in the same
+commit.
 
 Two gaps it does not close, deliberately:
 
@@ -138,8 +140,8 @@ Two gaps it does not close, deliberately:
 | Tool | Tier | Decision and reason |
 |---|---|---|
 | `dns_resolve` | 1 | **Approved and shipped.** The one network tool whose output is small, structured, and not instruction-following. A/AAAA come from the OS resolver, so no packet is sent by SRO at all; the other record types are queried over DNS against the same resolver, chosen from `/etc/resolv.conf` and never from a parameter, so the target cannot steer where a query asking about the target is sent. It resolves but never connects, so resolve-and-pin does not apply to it — which is exactly why it went first. |
-| `http_request` | 1 | **Approve behind the transport.** GET and HEAD only. Highest value and highest risk: it is the raw material for every other network finding and the tool the bypass above was aimed at. The POST action is **not** approved — that is `parameter_probe` with extra steps. |
-| `tls_inspect` | 1 | **Approve behind the transport.** Bounded output, and no meaningful instruction surface beyond certificate fields — which are attacker-influenced via a free certificate, so "just the expiry date" is not a low-risk payload. |
+| `http_request` | 1 | **Approved and shipped.** GET and HEAD only. Highest value and highest risk: it is the raw material for every other network finding and the tool the bypass above was aimed at. Destination comes from the `url` and is pinned to a resolved address; redirects are refused rather than followed; the response body is fenced before it reaches a model. The POST action is **not** approved — that is `parameter_probe` with extra steps. |
+| `tls_inspect` | 1 | **Approved and shipped.** Bounded output, and no meaningful instruction surface beyond certificate fields — which are attacker-influenced via a free certificate, so "just the expiry date" is not a low-risk payload. It handshakes with `CERT_NONE` on purpose and reads the DER itself, so expired and self-signed certificates are reportable; the address is pinned, so an unverified handshake is still a constrained one. |
 | `api_schema_fetch` | 2 | **Defer.** Needs the transport, and an answer on auth: schemas are usually behind authentication, which makes this tier 3 by the credential rule. Do not build it until `auth_session_test` is decided, or it gets built assuming a session system that does not exist. |
 | `parameter_probe` | 3 | **Defer.** Already marked destructive, correctly. The easiest tool on this list to turn into an incident: malformed input at volume against a live endpoint. Needs the transport, an approval flow, a per-endpoint request budget, and a rule that it never runs against a method not already known to be safe to fuzz. |
 | `auth_session_test` | 3 | **Defer, and treat as the gating decision.** Credential handling. Needs the credential-reference design to exist first, and a decision on whether a session may be held across calls at all. Everything authenticated here is downstream of that answer. |
@@ -147,18 +149,29 @@ Two gaps it does not close, deliberately:
 | `cloud_asset_query` | 4 | **Defer.** Reads infrastructure the program never listed, with the researcher's cloud credentials. Needs decisions on whose account is read and what "in scope" means for an asset nobody scoped. Not a transport problem. |
 | `ad_query` | 4 | **Defer.** Directory credentials, plus a data-minimisation question that is not SRO's to answer: enumerating a company's staff is its own ethical problem and needs an explicit human decision. |
 
-Tier 1 is now live for `dns_resolve`. `http_request` and `tls_inspect` have
-their verdicts and need handlers written against this transport, but neither has
-one. Tiers 2 through 4 are blocked on decisions that are not about code.
+Tier 1 is complete. Tiers 2 through 4 are blocked on decisions that are not about
+code.
 
-**Carried debt for whoever writes `http_request`.** Its spec declares
-`follow_redirects`, defaulting to false, and there is no handler, so the
-parameter is inert today. It becomes a real defect the moment a handler lands
-and quietly ignores it — a caller who sets it true and gets no redirect, with
-nothing to say so. Decide it in that commit, not before: either the handler
-raises the transport's `max_redirects` when it is set, or the parameter comes off
-the spec. The transport already refuses redirects by default, so the safe choice
-is to delete the parameter and let the transport's own default stand.
+Two of the three made design choices worth recording, because both look like gaps
+and are not:
+
+**`http_request` has no `follow_redirects` parameter.** It was in the spec while
+the tool was unimplemented, and inert. The safe resolution was to delete it rather
+than let a handler decide later: the transport already refuses redirects by
+default, and a `Location` header means the request stopped there. Following a
+redirect is asking for the next hop explicitly, which is a scope decision.
+
+**`tls_inspect` does not verify the certificate.** `getpeercert()` returns a
+parsed dict only when the chain validated, so a verifying handshake would report
+nothing for exactly the cases the tool exists to find — expired, self-signed, or
+issued for the wrong name. It handsakes with `CERT_NONE` and reads the DER itself.
+The pinning is unaffected, because the address was resolved and refused as private
+before the socket opened; an unverified handshake is not an unconstrained one. No
+chain is built and no signature is checked, and the result says so.
+
+**Resolved debt:** `follow_redirects` is gone from the `http_request` spec, in the
+same commit as its handler. It was recorded here as a debt to be paid at ship
+time rather than before, and it has been.
 
 ## Never approved
 

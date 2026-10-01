@@ -628,9 +628,148 @@ def _dns_note(inward: list[dict[str, Any]]) -> str:
     )
 
 
+# --- http_request (tier 1, behind the transport) --------------------------
+
+
+def handle_http_request(ctx: "HandlerContext", params: dict[str, Any]) -> Any:
+    """One GET or HEAD against an approved target.
+
+    The handler is a caller, not a peer: it builds a request and the transport
+    decides whether it happens, to where, and with what caps. There is no code
+    path here that reaches a socket — a handler that could would defeat every
+    control the transport holds.
+
+    GET and HEAD only. A POST is `parameter_probe` wearing a different name, and
+    `parameter_probe` is deferred precisely because it is the easiest tool in this
+    project to turn into an incident.
+
+    Redirects are not followed and there is no parameter to ask: the transport
+    refuses them by default, because a 302 to a link-local address is the most
+    useful redirect an attacker can hand you. `follow_redirects` was removed from
+    the spec for that reason rather than left as a parameter no handler honoured.
+    """
+    from ..core.egress import EgressRequest
+    from urllib.parse import urlsplit
+
+    url = str(params.get("url") or "").strip()
+    method = str(params.get("method") or "GET").upper()
+    headers = params.get("headers") or {}
+
+    if not url:
+        return {"error": "http_request needs a url"}
+
+    parts = urlsplit(url if "://" in url else f"https://{url}")
+    target = parts.netloc
+    if not target:
+        return {"error": f"could not determine a host from {url!r}"}
+
+    transport = ctx.session.transport()
+    request = EgressRequest(
+        target=target,
+        method=method,
+        path=parts.path or "/",
+        scheme=parts.scheme or "https",
+        headers=headers,
+    )
+    response = transport.send(request)
+
+    # Fenced, not raw. A response body is third-party text arriving in a context
+    # trusted to follow instructions, and it needs no vulnerability in the target
+    # to be an injection. The raw bytes are in the evidence record regardless.
+    return {
+        "url": url,
+        "method": method,
+        "status": response.status,
+        "reason": response.reason,
+        "headers": response.headers,
+        "bytes": response.size,
+        "truncated": response.truncated,
+        "elapsed_ms": response.elapsed_ms,
+        "resolved_to": response.destination.address,
+        "redirects": list(response.redirects),
+        "body_for_model": response.fenced_body(limit=8000),
+        "note": (
+            "One request, and only GET or HEAD. Redirects are refused, so a Location "
+            "header means the request stopped there; ask for the next hop explicitly "
+            "if it is in scope. Nothing was followed on your behalf, and SRO sent "
+            "nothing beyond the single request above."
+        ),
+    }
+
+
+# --- tls_inspect (tier 1, behind the transport) --------------------------
+
+
+def handle_tls_inspect(ctx: "HandlerContext", params: dict[str, Any]) -> Any:
+    """Read the certificate an in-scope host presents, without trusting it.
+
+    Verification is off on purpose. A certificate that is expired, self-signed
+    or issued for the wrong name is the reason anyone opens this tool, and a
+    verifying handshake reports nothing for exactly those cases.
+
+    What still holds is the pinning. The name is resolved once, refused if it
+    lands on a private or metadata address, and the pinned address is dialled
+    directly — so an unverified handshake is not an unconstrained one.
+    """
+    from ..core.egress import EgressLimits, inspect_tls, pin_destination
+
+    host = str(params.get("host") or "").strip()
+    port = int(params.get("port") or 443)
+
+    if not host:
+        return {"error": "tls_inspect needs a host"}
+    if not 1 <= port <= 65535:
+        return {"error": f"port {port} is out of range"}
+
+    limits = EgressLimits()
+    destination = pin_destination(host, scheme="https", port=port, limits=limits)
+    result = inspect_tls(destination, limits=limits)
+
+    certificate = result.get("certificate") or {}
+    validity = certificate.get("validity") or {}
+    expires = validity.get("not_after")
+    findings: list[str] = []
+    if expires:
+        findings.append(f"not_after={expires}; check it against today, this tool does not")
+    if certificate.get("subject_cn") and certificate.get("issuer_cn"):
+        if certificate["subject_cn"] == certificate["issuer_cn"]:
+            findings.append("subject and issuer are identical, so this certificate is self-signed")
+    if expires and _is_expired(expires):
+        findings.append("EXPIRED at the time of reading")
+
+    return {
+        "host": host,
+        "port": port,
+        "connected_to": destination.address,
+        "rejected_addresses": list(destination.rejected),
+        "protocol": result.get("protocol"),
+        "cipher": result.get("cipher"),
+        "verified": False,
+        "certificate": {
+            k: v
+            for k, v in certificate.items()
+            if k not in {"der_base64"}  # the raw cert is in the evidence record
+        },
+        "observations": findings,
+        "note": result.get("note"),
+    }
+
+
+def _is_expired(not_after: str) -> bool:
+    from ..core.util import utcnow_iso
+
+    try:
+        now = utcnow_iso().replace("Z", "")
+        return str(not_after).replace("Z", "") < now
+    except (TypeError, ValueError):
+        return False
+
+
 HANDLERS = {
     "scope_check": handle_scope_check,
     "dns_resolve": handle_dns_resolve,
+    "http_request": handle_http_request,
+    "tls_inspect": handle_tls_inspect,
     "endpoint_inventory": handle_endpoint_inventory,
     "code_search": handle_code_search,
     "render_report": handle_render_report,
@@ -640,14 +779,12 @@ HANDLERS = {
 #: Tools the catalog declares that this package does not implement, and why.
 #: Surfaced by `sro capabilities` so the gap is visible rather than inferred.
 NOT_IMPLEMENTED = {
-    "http_request": "needs egress review",
     "api_schema_fetch": "needs egress review",
     "auth_session_test": "needs egress review and an explicit approval flow",
     "parameter_probe": "needs egress review and an explicit approval flow",
     "cloud_asset_query": "needs cloud credential handling design",
     "ad_query": "needs directory credential handling design",
     "browser_navigate": "needs a browser runtime and egress review",
-    "tls_inspect": "needs egress review",
 }
 
 

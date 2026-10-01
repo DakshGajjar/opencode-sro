@@ -174,20 +174,16 @@ _register(
         name="http_request",
         capability=WEB,
         description=(
-            "Issue a single HTTP request to an in-scope target and record the full "
-            "request and response as evidence. Use this for endpoint-level web testing."
+            "Issue one GET or HEAD against an in-scope target and record the request and "
+            "response as evidence. The destination is taken from the url and pinned to a "
+            "resolved address; redirects are refused rather than followed. POST is a "
+            "separate tool with an approval flow and is not available here."
         ),
-        actions=("http_get", "http_head", "http_post_test"),
+        actions=("http_get", "http_head"),
         parameters={
             "url": {"type": PARAM_STRS, "required": True, "max_length": 2048},
-            "method": {
-                "type": PARAM_STRS,
-                "default": "GET",
-                "choices": ["GET", "HEAD", "POST"],
-            },
+            "method": {"type": PARAM_STRS, "default": "GET", "choices": ["GET", "HEAD"]},
             "headers": {"type": PARAM_STR_MAP, "default": {}},
-            "body": {"type": PARAM_STRS, "default": "", "max_length": 65536},
-            "follow_redirects": {"type": PARAM_BOOL, "default": False},
         },
         destructive=False,
         examples=("http_request(url='https://api.example.com/v1/me')",),
@@ -386,8 +382,14 @@ _register(
     ToolSpec(
         name="tls_inspect",
         capability=NETWORK,
-        description="Inspect the TLS configuration of an in-scope host: protocol, cipher, chain, expiry.",
-        actions=("tls_inspect", "tcp_connect"),
+        description=(
+            "Read the certificate an in-scope host presents: subject, issuer, SANs, "
+            "validity, fingerprint, negotiated protocol and cipher. The handshake does "
+            "not verify, deliberately — an expired, self-signed or mismatched "
+            "certificate is what this is for — and the address is pinned, so an "
+            "unverified handshake is not an unconstrained one."
+        ),
+        actions=("tls_inspect",),
         parameters={
             "host": {"type": PARAM_STRS, "required": True, "max_length": 253},
             "port": {"type": PARAM_INT, "default": 443},

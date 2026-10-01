@@ -501,6 +501,25 @@ class Session:
     #: makes rather than each call site reaching for its own.
     _zone_resolver: Any = None
 
+    def transport(self) -> Any:
+        """The egress transport, built once and reused.
+
+        Cached for the same reason the broker is: a transport holds the resolver
+        seam, and handing out a fresh one per call would give every handler its
+        own view of DNS with no way to constrain it.
+        """
+        from .egress import Transport
+
+        transport = getattr(self, "_transport", None)
+        if transport is None:
+            transport = Transport(resolver=self._transport_resolver)
+            object.__setattr__(self, "_transport", transport)
+        return transport
+
+    #: Resolver the transport dials through. Overridable so the network tools are
+    #: testable offline, and so one seam governs every lookup SRO makes.
+    _transport_resolver: Any = None
+
     def shared_zone_findings(self) -> list[dict[str, Any]]:
         """Wildcard scope rules sitting over a shared hosting zone.
 
