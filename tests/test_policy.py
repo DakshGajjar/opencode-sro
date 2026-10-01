@@ -314,8 +314,38 @@ def test_allow_message_is_informative(policy_engine: PolicyEngine) -> None:
 def test_describe_exposes_the_surface_without_exposing_a_host(policy_engine: PolicyEngine) -> None:
     described = policy_engine.describe()
     assert WEB in described["capabilities"]
-    assert "http_get" in described["actions_by_capability"][WEB]
+    assert "http_get" in described["permitted_actions"][WEB]
     assert "denial_of_service" in described["action_restriction_map"].values()
+
+
+def test_describe_separates_permitted_from_available(policy_engine: PolicyEngine) -> None:
+    """A model told it may `crawl` will try, and nothing implements `crawl`.
+
+    The permission set and the availability set are reported separately so the
+    distinction survives into the prompt.
+    """
+    described = policy_engine.describe()
+    assert set(described["permitted_actions"]) >= set(described["available_actions"])
+    for capability, actions in described["available_actions"].items():
+        assert set(actions) <= set(described["permitted_actions"][capability])
+
+    # Everything a catalog tool offers must be in the available set, or a tool
+    # would advertise an action the surface says does not exist.
+    from sro.core.tools import CATALOG
+
+    for spec in CATALOG.values():
+        for action in spec.actions:
+            assert action in described["available_actions"][spec.capability], (spec.name, action)
+
+
+def test_unimplemented_actions_are_named(policy_engine: PolicyEngine) -> None:
+    """The honest list: permitted by policy, offered by no tool."""
+    unimplemented = policy_engine.describe()["unimplemented_actions"]
+    flat = {a for actions in unimplemented.values() for a in actions}
+    # These are the ones the review flagged; none has a ToolSpec.
+    for action in ("crawl", "scan", "discover", "fingerprint", "sast",
+                   "form_interact", "session_replay", "token_inspect"):
+        assert action in flat, action
 
 
 # --- ordering: the cheapest decisive check comes first --------------------

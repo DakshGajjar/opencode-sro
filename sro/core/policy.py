@@ -663,11 +663,36 @@ class PolicyEngine:
         )
 
     def describe(self) -> dict[str, Any]:
+        """The policy surface, split by what is permitted vs what exists.
+
+        A model reading this cannot distinguish "the policy would allow it" from
+        "there is a tool that does it", so conflating them makes the model
+        request actions nothing implements. The availability set comes from the
+        tool catalog, not from this table.
+        """
+        from .tools import CATALOG
+
+        available: dict[str, list[str]] = {}
+        for spec in CATALOG.values():
+            available.setdefault(spec.capability, [])
+            for action in spec.actions:
+                if action not in available[spec.capability]:
+                    available[spec.capability].append(action)
+
         return {
             "engagement_loaded": self.engagement is not None,
             "engagement_active": self.active,
             "capabilities": list(CAPABILITIES),
-            "actions_by_capability": {k: sorted(v) for k, v in ALLOWED_ACTIONS.items()},
+            # Permissions the policy engine would grant, if a tool existed.
+            "permitted_actions": {k: sorted(v) for k, v in ALLOWED_ACTIONS.items()},
+            # Actions a registered tool actually offers. This is the set the
+            # model should plan against.
+            "available_actions": {k: sorted(v) for k, v in available.items()},
+            "unimplemented_actions": {
+                cap: sorted(set(actions) - set(available.get(cap, [])))
+                for cap, actions in ALLOWED_ACTIONS.items()
+                if set(actions) - set(available.get(cap, []))
+            },
             "destructive_actions": sorted(DESTRUCTIVE_ACTIONS),
             "action_restriction_map": {k: v for k, v in ACTION_RESTRICTION_MAP.items() if v},
             "rate_limits": {

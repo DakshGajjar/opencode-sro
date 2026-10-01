@@ -398,14 +398,19 @@ _register(
 )
 
 
-def catalog() -> list[dict[str, Any]]:
+def catalog(implemented: set[str] | None = None) -> list[dict[str, Any]]:
     """The tool surface, as advertised to a model.
 
     No hostnames, no API endpoints, no shell. Just typed tools and the
     capability each one belongs to.
+
+    `implemented` is the set of tools with a registered handler. Where it is
+    supplied, each entry carries `implemented`, because a model told a tool
+    exists will call it, and calling one that has no handler wastes a turn and
+    teaches the model the catalog is unreliable.
     """
-    return [
-        {
+    def row(spec: ToolSpec) -> dict[str, Any]:
+        data = {
             "name": spec.name,
             "capability": spec.capability,
             "description": spec.description,
@@ -424,8 +429,11 @@ def catalog() -> list[dict[str, Any]]:
             "requires_auth": spec.requires_auth,
             "examples": list(spec.examples),
         }
-        for spec in sorted(CATALOG.values(), key=lambda s: (s.capability, s.name))
-    ]
+        if implemented is not None:
+            data["implemented"] = spec.name in implemented
+        return data
+
+    return [row(spec) for spec in sorted(CATALOG.values(), key=lambda s: (s.capability, s.name))]
 
 
 def capabilities_summary() -> dict[str, list[str]]:

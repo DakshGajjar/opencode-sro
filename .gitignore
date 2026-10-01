@@ -22,4 +22,7 @@ opencode.db*
 
 # Marketplace listing drafts. Regenerate with the repo URL filled in;
 # not part of the package.
-marketplace-submission*.json
+marketplace-submission*
+
+# Local clones of other repos (awesome-opencode, etc). Never part of this repo.
+awesome-opencode/

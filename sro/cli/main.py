@@ -443,11 +443,22 @@ def cmd_capabilities(args: argparse.Namespace) -> int:
     engine = session.policy_engine()
     from ..core.tools import catalog
 
+    from ..core.tools import ToolBroker
+
+    # A tool with no handler is a dead end for the model, so the catalog says
+    # which ones are actually runnable rather than leaving the agent to find
+    # out by calling one.
+    broker = ToolBroker(engine, session.evidence_store())
     _emit(
         {
             "capabilities": engine.describe(),
-            "tools": catalog(),
+            "tools": catalog(implemented=set(broker.handlers)),
             "engagement": session.status(),
+            "note": (
+                "Only tools with implemented=true have a working handler. A tool with "
+                "implemented=false is a declared capability with no implementation; calling it "
+                "is refused with a message saying so."
+            ),
         }
     )
     return EXIT_OK

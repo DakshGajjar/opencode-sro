@@ -1,0 +1,124 @@
+name: SRO (Security Research Orchestrator)
+repo: https://github.com/dakshgajjar/opencode-sro
+tagline: Security research harness that reads bounty engagements and enforces scope in code, not in a prompt
+description: >-
+  A security control plane for authorized research: bug bounty programs, CTFs, security labs,
+  defensive engineering and incident response. An LLM is good at reasoning about security and bad
+  at deciding what it is allowed to touch, so SRO takes the second job. It reads Bugcrowd,
+  HackerOne and Intigriti engagements with no credentials required, stages the extracted scope
+  for explicit human confirmation, and then refuses any action the engagement does not authorize.
+  Ships 10 agents, 11 commands, and a deterministic scope engine, policy engine, tool broker and
+  evidence store. The platform connectors are read-only by construction: the transport has no
+  method that accepts an HTTP verb, and a test walks the package and fails if a write-shaped name
+  or a vendor SDK appears. A hypothesis can never become a finding without cited observed
+  evidence, and platform-supplied text is treated as untrusted data that cannot change scope,
+  policy or model routing. Local-first: sensitive material routes to a local model and external
+  inference is off by default. Requires Python 3.11+.
+scope:
+  - global
+tags:
+  - security
+  - bug-bounty
+  - pentesting
+  - scope-enforcement
+  - policy-engine
+  - evidence
+  - bugcrowd
+  - hackerone
+  - intigriti
+min_version: "1.18.0"
+homepage: https://www.npmjs.com/package/opencode-sro
+installation: |
+  ## Prerequisites
+
+  Python 3.11+ on your `PATH`, and OpenCode 1.18.0 or later.
+
+  ## Install
+
+  The plugin is a thin bridge; the authorization boundary is a Python package that ships with it,
+  so there is no network path from the model to a scope or policy decision.
+
+  ```bash
+  # 1. the plugin
+  opencode plugin add opencode-sro
+
+  # 2. agents, commands and instructions
+  npx opencode-sro install-assets
+  ```
+
+  Step 2 copies the agents, commands and instructions into `~/.config/opencode/` and wires the
+  instruction files into your `opencode.json`. The plugin cannot do this itself: OpenCode reads
+  those from config directories at startup, not from a plugin module.
+
+  Preview it first with `--dry-run`. It will not overwrite a file of yours that differs from the
+  shipped one; `--force` overrides that.
+
+  If your Python is not on `PATH` as `python3`:
+
+  ```bash
+  export SRO_PYTHON=/usr/bin/python3.12
+  ```
+
+  ## Try it without touching a real program
+
+  Run OpenCode from the directory you installed into; a subdirectory will not resolve the plugin.
+
+  ```bash
+  npx opencode-sro example > brief.json
+  opencode
+  ```
+
+  Then:
+
+  ```
+  load the brief in brief.json using bugcrowd
+  ```
+
+  The practice brief is entirely synthetic (reserved `.test` and `.example` TLDs, RFC 5737
+  addresses) and deliberately contains a prompt injection, a wildcard that conflicts with an
+  exclusion, an out-of-scope third party and a private range, so every rule has something to bite
+  on.
+
+  ## Usage
+
+  ```
+  /engagement  /scope  /evidence  /findings  /model  /agent  /policy
+  /status      /review /activate  /load
+  ```
+
+  Agents: `@sro` `@researcher` `@recon` `@web` `@api` `@ad` `@cloud` `@code` `@verifier`
+  `@reporter`
+
+  ```
+  > load https://bugcrowd.com/engagements/example
+  Public engagement found. No credentials required.
+  14 candidate targets, 6 exclusions, 8 restrictions
+  Engagement is NOT ACTIVE.
+
+  > review
+  > activate        # your explicit confirmation
+  > @web inspect https://api.example.com/v1/me
+  ```
+
+  ## Optional: read-only platform credentials
+
+  SRO reads public program pages with no credentials; that is the normal path. For programs that
+  gate their scope, configure a read-only token by naming where it lives. Never put a token in a
+  config file or in chat.
+
+  ```json
+  { "providers": { "bugcrowd": {
+      "mode": "readonly",
+      "credentials": "environment",
+      "token_env": "BUGCROWD_API_TOKEN"
+  } } }
+  ```
+
+  The token is used for authenticated `GET` requests to the platform's API host only, and is never
+  written to the manifest, the evidence store, a report or the audit log.
+
+  ## SRO cannot submit to a platform
+
+  There is no submission, comment, report-creation or program-modification capability anywhere in
+  SRO. Disclosure is the researcher's own act, performed by hand through the program's channel.
+  SRO writes the report to a local file and stops there.

@@ -17,6 +17,18 @@ misjudged query against a production domain can lock out accounts, trip
 detections, or read an entire directory. Treat every query as if the domain were
 production until you have confirmed otherwise.
 
+## What you can and cannot do
+
+You have no shell and no `webfetch`. That is deliberate: a command nobody can
+constrain is a command nobody can check against the engagement manifest.
+Everything you do goes through the `sro_*` tools, and every one of them is
+scope-checked before it runs. Call `sro_capabilities` to see what exists and
+plan against that, not against what the task seems to need.
+
+If a task needs a capability you do not have, say so and stop. Do not
+hand-write a script to work around it.
+
+
 ## Scope first, always
 
 1. `sro_status` — the engagement must be ACTIVE.
