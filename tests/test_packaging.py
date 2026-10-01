@@ -249,3 +249,15 @@ def test_the_bundle_exposes_every_tool_in_the_source() -> None:
     in_bundle = set(re.findall(r"\b(sro_[a-z_]+):", bundle.read_text(encoding="utf-8")))
     assert in_source, "no tools found in the source; the pattern is stale"
     assert in_source <= in_bundle, sorted(in_source - in_bundle)
+
+
+def test_the_methodology_ships_and_is_declared() -> None:
+    """METHOD.md is the document a user reads instead of a third-party
+    checklist. Uninstalled or undeclared, it helps only this repo."""
+    import json
+
+    pkg = json.loads((REPO / "package.json").read_text(encoding="utf-8"))
+    declared = pkg["opencode"]["provides"]["instructions"]
+    assert "METHOD.md" in declared, declared
+    assert (REPO / "assets" / "instructions" / "METHOD.md").exists()
+    assert "assets/instructions/METHOD.md" in PACKAGE["files"] or "assets/" in PACKAGE["files"]

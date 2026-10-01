@@ -63,6 +63,21 @@ you are expected to paper over.
 | Sensitive data stays local | the routing gate tests the resolved model, not the route name |
 | A skill cannot grant a capability | every agent demotes skills to guidance; the tool surface and the policy engine decide what exists |
 | Describing a finding is not evidence for it | `ToolSpec.produces_evidence` marks the bookkeeping tools, so a hypothesis cannot cite itself |
+| The shipped methodology cannot describe a tool that does not exist | `tests/test_method.py` resolves the catalog and fails if `METHOD.md` names an unimplemented tool |
+
+## The methodology
+
+`METHOD.md` ships with the package and is what you read instead of a
+third-party checklist. It is short on purpose. Techniques depend on the target
+and on what the program permits; the method is the part that does not — scope
+before anything else, a falsifiable expectation written before the test,
+reachability established before impact, and a stated record of what you did not
+test.
+
+It is also the only document here that is checked against the implementation.
+Every tool it names is resolved through the catalog at test time, so it cannot
+drift into recommending something that does not exist — which is the specific
+failure that makes imported checklists untrustworthy.
 
 ## Install
 

@@ -1,6 +1,6 @@
 [project]
 name = "sro"
-version = "0.4.0"  # keep in step with package.json
+version = "0.5.0"  # keep in step with package.json
 description = "SRO - Security Research Orchestrator: an OpenCode-native security research harness"
 requires-python = ">=3.11"
 dependencies = []
