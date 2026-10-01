@@ -151,6 +151,15 @@ Tier 1 is now live for `dns_resolve`. `http_request` and `tls_inspect` have
 their verdicts and need handlers written against this transport, but neither has
 one. Tiers 2 through 4 are blocked on decisions that are not about code.
 
+**Carried debt for whoever writes `http_request`.** Its spec declares
+`follow_redirects`, defaulting to false, and there is no handler, so the
+parameter is inert today. It becomes a real defect the moment a handler lands
+and quietly ignores it — a caller who sets it true and gets no redirect, with
+nothing to say so. Decide it in that commit, not before: either the handler
+raises the transport's `max_redirects` when it is set, or the parameter comes off
+the spec. The transport already refuses redirects by default, so the safe choice
+is to delete the parameter and let the transport's own default stand.
+
 ## Never approved
 
 - **Vendored third-party trees.** `sqlmap/`, `dvcs-ripper/`, `LinkFinder/`,

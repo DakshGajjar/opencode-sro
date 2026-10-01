@@ -8,7 +8,7 @@ that return "the implementation is not installed".
 What lives here and what does not, is a deliberate line:
 
     local and read-only   implemented below
-    reads a network       not implemented; see `_network_not_implemented`
+    reads a network       not implemented; see `NOT_IMPLEMENTED` below
 
 The reasoning is that a local handler can be audited by reading it, and it
 cannot cause harm to a third party. A network handler cannot be, and every one
@@ -456,6 +456,14 @@ def _is_metadata_host_candidate(address: str) -> bool:
     return address in _METADATA_ADDRESSES
 
 
+def _supported_record_types() -> list[str]:
+    """The record types the catalog accepts, read rather than restated."""
+    from ..core.tools import CATALOG
+
+    choices = CATALOG["dns_resolve"].parameters["record_type"].get("choices")
+    return sorted(choices) if choices else sorted(TYPE_NAMES.values())
+
+
 def handle_dns_resolve(ctx: "HandlerContext", params: dict[str, Any]) -> Any:
     """Resolve an in-scope name and classify what it resolves to.
 
@@ -482,13 +490,22 @@ def handle_dns_resolve(ctx: "HandlerContext", params: dict[str, Any]) -> Any:
 
     if not host:
         return {"error": "dns_resolve needs a host", "usage": "dns_resolve(host='api.example.com')"}
+    # The catalog owns the supported set and rejects anything else before this
+    # runs, so reaching this guard means a direct caller. It still guards — but it
+    # reads the list from the catalog rather than restating it, because two lists
+    # that are supposed to agree eventually will not.
     if record_type not in TYPE_BY_NAME:
         return {
             "error": f"unknown record type {record_type!r}",
-            "supported": sorted(TYPE_NAMES.values()),
+            "supported": _supported_record_types(),
         }
 
-    verdict = ctx.scope_engine().check(host)
+    # No scope check here, deliberately. The broker resolved authorization before
+    # this function was called, and a handler that re-derived it would be a second
+    # implementation of the scope engine — which is the thing the plugin test
+    # forbids elsewhere. Two answers to one question is not belt-and-braces in a
+    # security tool; if they ever disagreed, this handler would act on a different
+    # authorization than the one policy approved.
     limits = EgressLimits()
     deadline = time.monotonic() + limits.total_timeout
     rtype = TYPE_BY_NAME[record_type]
@@ -520,7 +537,10 @@ def handle_dns_resolve(ctx: "HandlerContext", params: dict[str, Any]) -> Any:
         return {
             "host": host,
             "record_type": record_type,
-            "status": "NOERROR" if addresses else "NOERROR",
+            # NOERROR even with no addresses: the name resolved and has no record
+            # of this type, which is an empty answer rather than a failure. Only a
+            # resolver failure is NXDOMAIN, and that arrives as an exception above.
+            "status": "NOERROR",
             "addresses": addresses,
             "via": via,
             "resolves_inward": bool(inward),

@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+REPO = Path(__file__).resolve().parents[1]
+
 from sro.core.egress import DestinationRefused
 from sro.core.tools import CATALOG, ToolBroker
 from sro.handlers import HANDLERS, HandlerContext
@@ -809,3 +811,95 @@ class TestDnsResolverComesFromTheOperatingSystem:
         resolv.write_text("search example.com\noptions edns0\n")
         with pytest.raises(DestinationRefused, match="will not fall back to a public resolver"):
             system_nameservers(str(resolv))
+
+
+# --- no dead or duplicated logic in the shipped handlers ------------------
+
+
+HANDLER_SOURCE = REPO / "sro" / "handlers" / "__init__.py"
+
+
+def test_no_handler_holds_an_unused_local() -> None:
+    """Assigned and never read is a leftover, and leftovers misdescribe intent.
+
+    This is the guard for a real instance: `verdict = scope_engine().check(host)`
+    in `dns_resolve`, which the broker had already decided and the handler never
+    read. A reader seeing it concludes there is a scope gate inside the handler.
+    There is not — and that is the more serious half, because dead code that
+    looks like a security control is a false description of one.
+
+    Note this is deliberately not a ban on reading a scope verdict:
+    `handle_scope_check` exists to report verdicts, and forbidding it there would
+    be forbidding the tool's actual purpose.
+    """
+    import ast
+
+    tree = ast.parse(HANDLER_SOURCE.read_text(encoding="utf-8"))
+    for function in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        assigned: dict[str, int] = {}
+        loaded: set[str] = set()
+        for node in ast.walk(function):
+            if isinstance(node, ast.Name):
+                if isinstance(node.ctx, ast.Store):
+                    assigned.setdefault(node.id, node.lineno)
+                else:
+                    loaded.add(node.id)
+        dead = {
+            name: line
+            for name, line in assigned.items()
+            if name not in loaded and not name.startswith("_")
+        }
+        assert not dead, f"{function.name}() assigns and never reads: {dead}"
+
+
+def test_no_conditional_has_identical_arms() -> None:
+    """`x if cond else x` is a no-op that reads like a decision that was never
+    finished. Found here as a real instance, kept as a guard."""
+    import ast
+
+    tree = ast.parse(HANDLER_SOURCE.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.IfExp) and ast.dump(node.body) == ast.dump(node.orelse):
+            raise AssertionError(
+                f"line {node.lineno}: both arms of the conditional are identical"
+            )
+
+
+def test_the_handler_module_docstring_points_at_something_real() -> None:
+    """It named a function that was deleted two commits earlier.
+
+    A docstring pointing at a nonexistent symbol is worse than one that points at
+    nothing: it tells a reader the registry is somewhere it is not, and they go
+    looking for it instead of reading the code in front of them.
+    """
+    text = HANDLER_SOURCE.read_text(encoding="utf-8")
+    docstring_end = text.index('"""', text.index('"""') + 3)
+    docstring = text[:docstring_end]
+
+    import re
+
+    # Every other module, and every symbol this one actually defines. Including
+    # this file in the haystack would make the check vacuous: the docstring is
+    # part of its own file, so every symbol it names would "exist" right where it
+    # was written, which is exactly the defect going undetected.
+    rest_of_package = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (REPO / "sro").rglob("*.py")
+        if path != HANDLER_SOURCE
+    )
+    package = rest_of_package + text[docstring_end:]
+    for symbol in re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", docstring):
+        assert symbol in text[docstring_end:] or symbol in package, (
+            f"the module docstring points at {symbol!r}, which exists nowhere in the package"
+        )
+
+
+def test_the_supported_record_types_are_read_from_the_catalog() -> None:
+    """Two lists that are supposed to agree eventually will not."""
+    from sro.core.tools import CATALOG
+    from sro.handlers import _supported_record_types
+
+    assert _supported_record_types() == sorted(
+        CATALOG["dns_resolve"].parameters["record_type"]["choices"]
+    )
+    assert "supported" not in _supported_record_types(), "a function name, not a type"

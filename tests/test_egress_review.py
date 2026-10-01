@@ -192,3 +192,21 @@ def test_dns_resolve_takes_its_resolver_from_the_operating_system() -> None:
     source = inspect.getsource(system_nameservers)
     assert "/etc/resolv.conf" in source or "resolv" in source
     assert re.search(r"[Nn]ever from a parameter|never from a parameter", BODY)
+
+
+def test_deferred_spec_parameters_are_recorded_not_left_to_be_discovered() -> None:
+    """`follow_redirects` is inert while `http_request` has no handler.
+
+    That is the right time to leave it alone and the wrong time to forget it:
+    it becomes a defect the moment a handler lands and ignores it. So the debt is
+    written down in the review, with the decision named.
+    """
+    from sro.core.tools import CATALOG
+
+    spec = CATALOG["http_request"]
+    assert "follow_redirects" in spec.parameters
+    assert "http_request" in NOT_IMPLEMENTED, "no handler exists to ignore it yet"
+    assert re.search(r"follow_redirects", BODY), (
+        "the review must record the deferred follow_redirects decision"
+    )
+    assert re.search(r"either the handler\nraises|deletes? the parameter|deletes the parameter", BODY)
