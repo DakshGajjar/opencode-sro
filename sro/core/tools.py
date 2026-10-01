@@ -516,6 +516,35 @@ _PARAMETRIC_ACTIONS = {"http_request": "method"}
 #: permanently unusable through the broker.
 _TARGET_PARAMS = ("target", "url", "host", "domain", "base_dn")
 
+#: Parameters that name the thing a request will actually contact. When a spec
+#: declares one of these, the URL is the target: a separately supplied `target`
+#: is a claim about the request, and a claim can be wrong. Deriving the policy
+#: target from the URL is what makes url/target disagreement impossible to
+#: express rather than merely discouraged.
+_URL_PARAMS = ("url", "endpoint", "host", "domain", "base_dn")
+
+
+def _same_authority(claimed: str, url: str) -> bool:
+    """Do a claimed target and a request URL name the same host?
+
+    Compared as authority, not as strings, so a path, port, scheme or a trailing
+    dot cannot make two different hosts look like one request. A claim naming a
+    parent domain does not cover a subdomain: that is a scope question, and the
+    scope engine answers it, not this function.
+    """
+    def authority(value: str) -> str:
+        text = value.strip()
+        if "://" in text:
+            text = text.split("://", 1)[1]
+        text = text.split("/", 1)[0]
+        if text.startswith("[") and "]" in text:  # bracketed IPv6
+            return text.split("]")[0].lstrip("[").lower().rstrip(".")
+        if text.count(":") == 1:  # host:port
+            text = text.split(":", 1)[0]
+        return text.lower().rstrip(".")
+
+    return authority(claimed) == authority(url)
+
 
 def _is_batch(value: Any) -> bool:
     """True when a value carries several targets rather than one."""
@@ -618,9 +647,54 @@ class ToolBroker:
         # none, and handing it a stringified list gives the scope engine a target no
         # rule can ever match. The handler resolves each against the real ScopeEngine.
         is_batched_call = batched or _is_batch(parameters.get("target"))
-        resolved_target = (target if isinstance(target, str) else "") or _first_str(
-            parameters, _TARGET_PARAMS
-        )
+
+        # For a tool that acts on a URL, the URL is the only thing that decides
+        # what gets contacted. Consulting the caller's `target` as well is how
+        # `target=api.acme.test, url=admin.acme.test` reached ALLOW: the ladder
+        # approved the host and the handler would have fetched the other one.
+        # The verdict is taken from the URL alone, and a disagreement is refused
+        # rather than silently resolved — a mismatch means the caller is confused
+        # or lying, and both deserve a stop.
+        acts_on_url = next((k for k in _URL_PARAMS if k in spec.parameters), "")
+        if acts_on_url:
+            from_url = str(parameters.get(acts_on_url) or "").strip()
+            claimed = target if isinstance(target, str) else ""
+            if claimed and from_url and not _same_authority(claimed, from_url):
+                return BrokerResult(
+                    allowed=False,
+                    policy={
+                        "result": DENY,
+                        "reason": (
+                            f"the {acts_on_url} does not match the target it was approved under"
+                        ),
+                        "code": "url_target_mismatch",
+                        "target": from_url,
+                        "tool": spec.name,
+                        "capability": spec.capability,
+                    },
+                    error=(
+                        f"SRO POLICY DENIED\n\n"
+                        f"Tool:\n  {spec.name} ({spec.capability})\n\n"
+                        f"Reason:\n  {acts_on_url}={from_url} does not match "
+                        f"target={claimed}\n\n"
+                        f"The scope check approves the target, not the intent. A request whose "
+                        f"destination differs from the target it was cleared against is refused "
+                        f"here rather than passed to the handler.\n\n"
+                        f"No network request was made."
+                    ),
+                )
+            resolved_target = from_url
+            # Evidence keeps the engagement-facing identity, not the full URL. The
+            # report builder groups observations by target, so a record written
+            # against "https://api.acme.test/v1/orders/2" would not be found by a
+            # finding recorded against "api.acme.test" — the same finding, split
+            # in two, both halves uncitable.
+            evidence_target = claimed or from_url
+        else:
+            resolved_target = (target if isinstance(target, str) else "") or _first_str(
+                parameters, _TARGET_PARAMS
+            )
+            evidence_target = resolved_target
         if is_batched_call and not spec.requires_target:
             resolved_target = ""
         request = PolicyRequest(
@@ -657,7 +731,7 @@ class ToolBroker:
             )
             return BrokerResult(allowed=False, policy=decision.to_dict(), error=message)
 
-        effective_target = request.target
+        effective_target = evidence_target or request.target
         try:
             raw = handler(parameters, decision)
         except Exception as exc:  # noqa: BLE001 - a tool failure must be evidence, not a crash

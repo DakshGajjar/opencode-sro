@@ -501,3 +501,64 @@ def test_check_many_counts_unknown_separately(scope_engine) -> None:
     assert result["out_of_scope"] == 1
     assert result["unknown"] == 1
     assert result["checked"] == 3
+
+
+# --- a request cannot disagree with the target it was approved under ------
+
+
+def test_a_url_cannot_reach_a_host_other_than_its_approved_target(active_session) -> None:
+    """The bypass this closes.
+
+    The policy target is derived from `url`, and a caller-supplied `target` that
+    disagrees is refused. Before this, `target=api.acme.test` with
+    `url=https://admin.acme.test/secret` reached ALLOW: the ladder approved the
+    host and the handler would have fetched the other one. It was invisible
+    while every network tool was unimplemented, and it would have gone live the
+    moment one shipped.
+    """
+    b = broker(active_session)
+    called = []
+    b.register("http_request", lambda p, d: called.append(p) or {"status_code": 200})
+    result = b.execute(
+        tool="http_request",
+        target="api.acme.test",
+        parameters={"url": "https://admin.acme.test/secret", "method": "GET"},
+        agent="web",
+    )
+    assert result.allowed is False
+    assert result.policy["code"] == "url_target_mismatch"
+    assert called == [], "handler ran for a host that was never approved"
+
+
+@pytest.mark.parametrize(
+    "claimed,url,agree",
+    [
+        ("api.acme.test", "https://api.acme.test/v1/x", True),
+        ("api.acme.test", "http://API.acme.test:8443/x", True),
+        ("api.acme.test", "https://api.acme.test.evil.com/x", False),
+        ("api.acme.test", "https://evil.com/?u=api.acme.test", False),
+        ("acme.test", "https://api.acme.test/x", False),
+        ("api.acme.test", "https://admin.acme.test/x", False),
+    ],
+)
+def test_authority_comparison_is_not_string_comparison(claimed, url, agree) -> None:
+    """A parent domain does not cover a subdomain, and a host-looking prefix
+    does not make a different host the same one. Both are scope questions, and
+    the scope engine answers them — not a string comparison here."""
+    from sro.core.tools import _same_authority
+
+    assert _same_authority(claimed, url) is agree
+
+
+def test_a_url_only_call_is_still_scope_checked(active_session) -> None:
+    """No claimed target does not mean no check. The URL becomes the target."""
+    b = broker(active_session)
+    called = []
+    b.register("http_request", lambda p, d: called.append(p) or {"status_code": 200})
+    result = b.execute(
+        tool="http_request",
+        parameters={"url": "https://admin.acme.test/secret", "method": "GET"},
+        agent="web",
+    )
+    assert result.allowed is False
+    assert called == []
