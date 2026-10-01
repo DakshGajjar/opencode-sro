@@ -12,10 +12,33 @@ deciding what it is allowed to touch. SRO takes the second job.
 ```
 /engagement  /scope  /evidence  /findings  /model  /agent  /policy
 /status      /review /activate  /load
+
+/recon       /triage /validate  /remember  /bypass-403
 ```
 
 Agents: `@sro` `@researcher` `@recon` `@web` `@api` `@ad` `@cloud` `@code`
 `@verifier` `@reporter`
+
+### What the tools can actually do
+
+Most of the catalog is declared but not implemented, and the point of declaring
+it is that `sro_capabilities` shows you the truth. Five tools work today, and all
+five are local and read-only:
+
+| Tool | What it does |
+|---|---|
+| `scope_check` | deterministic scope verdict, one target or a whole list |
+| `endpoint_inventory` | what the evidence store already knows about a target |
+| `code_search` | pattern search plus built-in sink rules over the local tree |
+| `record_hypothesis` | writes a hypothesis with all four fields required |
+| `render_report` | renders a report from recorded evidence, to a local file |
+
+Network tools — `dns_resolve`, `http_request`, `parameter_probe` and the rest —
+are declared with `implemented: false` and return a refusal naming the tools that
+do work. That is deliberate. A network handler needs its own review of egress and
+response handling, and shipping it alongside the plumbing would mean reviewing
+both at once. Send the request yourself; that division is intentional, not a gap
+you are expected to paper over.
 
 ```bash
 > load https://bugcrowd.com/engagements/example
@@ -38,6 +61,8 @@ Agents: `@sro` `@researcher` `@recon` `@web` `@api` `@ad` `@cloud` `@code`
 | A discovered host is not an authorized host | `UNKNOWN` is blocked, and cannot be configured to allow |
 | SRO cannot submit to a platform | the connector transport has no method that accepts an HTTP verb |
 | Sensitive data stays local | the routing gate tests the resolved model, not the route name |
+| A skill cannot grant a capability | every agent demotes skills to guidance; the tool surface and the policy engine decide what exists |
+| Describing a finding is not evidence for it | `ToolSpec.produces_evidence` marks the bookkeeping tools, so a hypothesis cannot cite itself |
 
 ## Install
 

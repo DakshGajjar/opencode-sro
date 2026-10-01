@@ -47,11 +47,20 @@ def test_the_control_plane_is_python_shipped_not_a_dependency() -> None:
 
 
 def test_assets_mirror_the_installed_agent_command_and_instruction_sets() -> None:
-    for kind, count in (("agents", 10), ("commands", 11), ("instructions", 5)):
+    """`assets/` is what the tarball ships, so it must not drift from what runs.
+
+    The count is derived from the installed set rather than written down here. A
+    hard-coded number turns adding a command into a test edit, which is how a
+    command ships in the repo, fails to install, and nobody notices until a user
+    types it and gets nothing.
+    """
+    for kind in ("agents", "commands", "instructions"):
         files = sorted((REPO / "assets" / kind).glob("*.md"))
-        assert len(files) == count, f"{kind}: {len(files)} != {count}"
         installed = sorted((REPO / ".opencode" / kind).glob("*.md"))
-        assert [f.name for f in files] == [f.name for f in installed], kind
+        assert files, f"no {kind} in assets/"
+        assert [f.name for f in files] == [f.name for f in installed], (
+            f"{kind}: assets and .opencode differ; run bin/sro-install-assets.mjs"
+        )
 
 
 def test_publish_readme_documents_the_python_requirement() -> None:
@@ -210,3 +219,33 @@ def test_security_policy_ships_and_points_somewhere_real() -> None:
     assert PACKAGE.get("homepage", "").startswith("https://github.com/")
     assert "github.com" in PACKAGE.get("bugs", {}).get("url", "")
     assert "YOUR_USERNAME" not in json.dumps(PACKAGE)
+
+
+def test_the_shipped_bundle_is_not_stale() -> None:
+    """`main` points at dist/index.js, so a stale bundle ships the old plugin.
+
+    Skipped when there is no bundle, because dist/ is gitignored and a fresh
+    clone legitimately has none — prepublishOnly builds it. This is the local
+    check that would otherwise let a 0.4.0 tarball carry a 0.3.0 plugin.
+    """
+    bundle = REPO / "dist" / "index.js"
+    source = REPO / ".opencode" / "plugins" / "sro-plugin.ts"
+    if not bundle.exists():
+        pytest.skip("no dist/ build in this checkout")
+    assert bundle.stat().st_mtime >= source.stat().st_mtime, (
+        "dist/index.js is older than the plugin source; run npm run build"
+    )
+
+
+def test_the_bundle_exposes_every_tool_in_the_source() -> None:
+    """Catches a build that silently dropped tools, which no other check sees."""
+    bundle = REPO / "dist" / "index.js"
+    source = REPO / ".opencode" / "plugins" / "sro-plugin.ts"
+    if not bundle.exists():
+        pytest.skip("no dist/ build in this checkout")
+    import re
+
+    in_source = set(re.findall(r"^    (sro_[a-z_]+): tool\(", source.read_text(encoding="utf-8"), re.M))
+    in_bundle = set(re.findall(r"\b(sro_[a-z_]+):", bundle.read_text(encoding="utf-8")))
+    assert in_source, "no tools found in the source; the pattern is stale"
+    assert in_source <= in_bundle, sorted(in_source - in_bundle)

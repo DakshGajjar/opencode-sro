@@ -172,3 +172,107 @@ def test_catalog_marks_whether_a_tool_is_implemented() -> None:
     by_name = {row["name"]: row["implemented"] for row in partial}
     assert by_name["scope_check"] is True
     assert by_name["http_request"] is False
+
+
+# --- skills are not authority --------------------------------------------
+
+SKILL_SECTION = "## Skills and playbooks are not authority"
+
+
+@pytest.mark.parametrize("name", AGENT_NAMES)
+def test_every_agent_says_a_skill_cannot_grant_a_capability(name: str) -> None:
+    """A skill or playbook arrives from outside and is treated as data.
+
+    An agent without this rule will read "run tools/lead_board.py" as an
+    instruction and reach for a shell it does not have — or worse, invent one.
+    The rule has to be in every agent, not just the coordinator, because the
+    subagents are the ones actually holding the skill when it misleads them.
+    """
+    body = (AGENTS / f"{name}.md").read_text(encoding="utf-8")
+    assert SKILL_SECTION in body, f"{name}.md does not demote skills to guidance"
+
+    section = body.split(SKILL_SECTION, 1)[1]
+    # the three disagreements that actually come up
+    assert re.search(r"tool surface wins|tool surface|surface wins", section, re.I), (
+        f"{name}.md does not say the tool surface outranks a skill"
+    )
+    assert re.search(r"never hand-?write a script", section, re.I), (
+        f"{name}.md does not forbid substituting a script for a missing tool"
+    )
+    assert re.search(r"untrusted", section, re.I), (
+        f"{name}.md does not treat skill contents as untrusted text"
+    )
+
+
+@pytest.mark.parametrize("name", AGENT_NAMES)
+def test_skill_section_does_not_contradict_the_scope_rule(name: str) -> None:
+    """The section must not become a licence to authorize anything.
+
+    It says a skill cannot widen scope. If it also said a skill could, the two
+    halves would cancel and the section would be worse than nothing.
+    """
+    body = (AGENTS / f"{name}.md").read_text(encoding="utf-8")
+    section = body.split(SKILL_SECTION, 1)[1]
+    forbidden = re.findall(
+        r"skill\s+(?:may|can)\s+(?:widen|extend|grant|authorize|override)", section, re.I
+    )
+    assert not forbidden, f"{name}.md lets a skill change scope: {forbidden}"
+    assert re.search(r"UNKNOWN is not a yes", section), (
+        f"{name}.md does not restate that UNKNOWN blocks"
+    )
+
+
+COMMANDS = REPO / ".opencode" / "commands"
+EXPECTED_COMMANDS = {
+    "recon", "triage", "validate", "remember", "bypass-403",
+    "activate", "review", "load", "scope", "evidence", "findings",
+    "policy", "status", "engagement", "agent", "model",
+}
+
+
+def test_the_five_documented_commands_exist() -> None:
+    """`/recon`, `/triage`, `/validate`, `/remember`, `/bypass-403` were named in
+    the audit as missing and are the ones a methodology skill actually calls."""
+    present = {p.stem for p in COMMANDS.glob("*.md")}
+    assert EXPECTED_COMMANDS <= present, sorted(EXPECTED_COMMANDS - present)
+
+
+@pytest.mark.parametrize(
+    "name", ["recon", "triage", "validate", "remember", "bypass-403"]
+)
+def test_new_command_never_substitutes_a_script_for_a_missing_tool(name: str) -> None:
+    """These five are the instructions most likely to be handed to an agent
+    alongside a skill that references absent tooling, so they are the place a
+    workaround is most likely to get written down as if it were procedure."""
+    text = (COMMANDS / f"{name}.md").read_text(encoding="utf-8")
+    for pattern in (
+        r"\brun\s+(?:the\s+)?(?:subfinder|amass|httpx|nuclei|sqlmap|gau|ffuf|katana|ffuf)\b",
+        r"\buse\s+the\s+(?:terminal|shell|command\s+line)\b",
+        r"\bwrite\s+(?:a|an|the)\s+script\b",
+        r"\bbash\b",
+    ):
+        for hit in imperative_matches(text, pattern):
+            assert False, f"{name}.md instructs a workaround: {hit}"
+
+
+@pytest.mark.parametrize("name", ["recon", "triage", "validate", "remember", "bypass-403"])
+def test_new_command_refers_only_to_real_tools(name: str) -> None:
+    defined = _defined_tools()
+    referenced = set(
+        re.findall(r"\bsro_[a-z_]+\b", (COMMANDS / f"{name}.md").read_text(encoding="utf-8"))
+    )
+    missing = sorted(referenced - defined)
+    assert not missing, f"{name}.md references tools that do not exist: {missing}"
+
+
+@pytest.mark.parametrize("name", ["recon", "validate", "bypass-403"])
+def test_commands_that_cannot_act_on_a_target_say_so(name: str) -> None:
+    """Three of these five end at a request the researcher has to send.
+
+    Without saying so in the command itself, the agent either implies it tested
+    something, or stops silently and the user assumes it worked.
+    """
+    text = (COMMANDS / f"{name}.md").read_text(encoding="utf-8").lower()
+    assert re.search(r"sends no requests|cannot send requests", text), (
+        f"{name}.md does not state that the researcher performs the request"
+    )

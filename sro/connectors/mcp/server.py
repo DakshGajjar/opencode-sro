@@ -34,7 +34,20 @@ from ...readers import all_capabilities, build_reader
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "sro-readers"
-SERVER_VERSION = "0.1.0"
+def _package_version() -> str:
+    """The npm version, read rather than restated.
+
+    This constant was pinned at 0.1.0 while the package was at 0.3.0, and nothing
+    noticed: an MCP client is told the server version and has no way to check it.
+    """
+    manifest = Path(__file__).resolve().parents[3] / "package.json"
+    try:
+        return json.loads(manifest.read_text(encoding="utf-8")).get("version", "unknown")
+    except (OSError, ValueError):
+        return "unknown"
+
+
+SERVER_VERSION = _package_version()
 
 #: The complete tool surface of this server. Every entry is a read.
 TOOLS: list[dict[str, Any]] = [
