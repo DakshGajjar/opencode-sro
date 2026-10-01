@@ -220,7 +220,12 @@ _register(
     ToolSpec(
         name="dns_resolve",
         capability=RECON,
-        description="Resolve an in-scope hostname and record the answers as evidence.",
+        description=(
+            "Resolve an in-scope hostname and classify every address it resolves to. "
+            "A/AAAA come from the system resolver, so no packet is sent by SRO; other "
+            "record types are queried over DNS against that same resolver. Reports a "
+            "name that resolves inward as a result rather than an error."
+        ),
         actions=("dns_query",),
         parameters={
             "host": {"type": PARAM_STRS, "required": True, "max_length": 253},
@@ -230,7 +235,11 @@ _register(
                 "choices": ["A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA", "PTR"],
             },
         },
-        examples=("dns_resolve(host='api.example.com', record_type='A')",),
+        requires_target=True,
+        examples=(
+            "dns_resolve(host='api.example.com', record_type='A')",
+            "dns_resolve(host='example.com', record_type='MX')",
+        ),
     )
 )
 

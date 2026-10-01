@@ -412,17 +412,12 @@ def test_no_handler_can_obtain_the_resolver_or_a_limit_override() -> None:
     assert "limits" in public  # read-only, and frozen
 
 
-def test_every_approved_tool_still_has_a_verdict_in_the_doc() -> None:
-    """The transport existing does not approve a tool.
+def test_only_dns_resolve_is_registered_as_a_network_tool() -> None:
+    """`dns_resolve` is the one approved tool, and it shipped on the strength of
+    a verdict written first. `test_egress_review.py` owns the verdicts; this
+    asserts the code agrees with them, so a second handler cannot appear without
+    one of the two files being wrong."""
+    from sro.handlers import HANDLERS, NOT_IMPLEMENTED
 
-    It is the precondition. `test_egress_review.py` owns the verdicts, and it
-    asserts that nothing is approved; if that test ever passes with an approved
-    tool, this one should already be failing here.
-    """
-    from sro.handlers import HANDLERS
-
-    assert not HANDLERS.keys() & {
-        "http_request", "dns_resolve", "tls_inspect",
-        "parameter_probe", "api_schema_fetch", "auth_session_test",
-        "browser_navigate", "cloud_asset_query", "ad_query",
-    }, "a network tool shipped; docs/EGRESS.md needs its verdict"
+    network = set(NOT_IMPLEMENTED) | {"dns_resolve"}
+    assert HANDLERS.keys() & network == {"dns_resolve"}, sorted(HANDLERS.keys() & network)

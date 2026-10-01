@@ -7,9 +7,10 @@ This document is the gate. It exists because the fastest way to destroy the
 property SRO is built on is to add a network handler carelessly: one tool that
 connects to the wrong host turns a control plane into a suggestion.
 
-**Status: nothing is approved.** Five tools are implemented and all five are
-local. This document decides the other nine, and the review it describes has not
-been run for any of them yet.
+**Status: one tool is approved and shipped.** `dns_resolve` is implemented, on
+the strength of the verdicts below. The other eight are described here and none
+of them exists in code. Six tools are implemented in total: five local and read
+only, plus `dns_resolve`.
 
 ## Why one review covers forty tools
 
@@ -115,16 +116,19 @@ cannot override, credentials as references resolved at the moment of use,
 response bodies fenced through `sro/core/untrusted.py`, and redirects refused by
 default with each hop re-pinned.
 
-**No network tool is approved, and none has been wired to it.** The transport
-being present is the precondition for tier 1, not an approval. `tests/test_egress.py`
-asserts that no network tool has shipped, so the day one does, both this document
-and the code are asked to change in the same commit.
+**One tool is wired to it: `dns_resolve`.** The transport being present was the
+precondition, not the approval; the approval is the verdict above, written before
+the handler. `tests/test_egress.py` asserts that no *other* network tool has
+shipped, so the day one does, both this document and the code are asked to change
+in the same commit.
 
 Two gaps it does not close, deliberately:
 
 - **No rate limiting.** `EgressLimits` caps one request. The per-host accounting
-  belongs to the policy engine, which already holds the program's stated number,
-  and inventing a second limiter here would give two answers to one question.
+  belongs to the policy engine, which already holds the program's stated number
+  at step 9 of the ladder, and inventing a second limiter here would give two
+  answers to one question. DNS inherits it: `dns_resolve` is `rate_limited`, so a
+  long lookup run is throttled at the program's number like any other action.
 - **No redirect following in practice.** `max_redirects` exists and is tested,
   but the default is 0 and nothing raises it yet. It is here so the re-pinning
   path is reviewed now rather than under time pressure.
@@ -133,7 +137,7 @@ Two gaps it does not close, deliberately:
 
 | Tool | Tier | Decision and reason |
 |---|---|---|
-| `dns_resolve` | 1 | **Approve behind the transport.** The one network tool whose output is small, structured, and not instruction-following. Still needs resolve-and-pin so a hostile resolver cannot steer it inward. |
+| `dns_resolve` | 1 | **Approved and shipped.** The one network tool whose output is small, structured, and not instruction-following. A/AAAA come from the OS resolver, so no packet is sent by SRO at all; the other record types are queried over DNS against the same resolver, chosen from `/etc/resolv.conf` and never from a parameter, so the target cannot steer where a query asking about the target is sent. It resolves but never connects, so resolve-and-pin does not apply to it — which is exactly why it went first. |
 | `http_request` | 1 | **Approve behind the transport.** GET and HEAD only. Highest value and highest risk: it is the raw material for every other network finding and the tool the bypass above was aimed at. The POST action is **not** approved — that is `parameter_probe` with extra steps. |
 | `tls_inspect` | 1 | **Approve behind the transport.** Bounded output, and no meaningful instruction surface beyond certificate fields — which are attacker-influenced via a free certificate, so "just the expiry date" is not a low-risk payload. |
 | `api_schema_fetch` | 2 | **Defer.** Needs the transport, and an answer on auth: schemas are usually behind authentication, which makes this tier 3 by the credential rule. Do not build it until `auth_session_test` is decided, or it gets built assuming a session system that does not exist. |
@@ -143,8 +147,9 @@ Two gaps it does not close, deliberately:
 | `cloud_asset_query` | 4 | **Defer.** Reads infrastructure the program never listed, with the researcher's cloud credentials. Needs decisions on whose account is read and what "in scope" means for an asset nobody scoped. Not a transport problem. |
 | `ad_query` | 4 | **Defer.** Directory credentials, plus a data-minimisation question that is not SRO's to answer: enumerating a company's staff is its own ethical problem and needs an explicit human decision. |
 
-Tier 1 becomes approvable once the transport exists. Tiers 2 through 4 are
-blocked on decisions that are not about code.
+Tier 1 is now live for `dns_resolve`. `http_request` and `tls_inspect` have
+their verdicts and need handlers written against this transport, but neither has
+one. Tiers 2 through 4 are blocked on decisions that are not about code.
 
 ## Never approved
 

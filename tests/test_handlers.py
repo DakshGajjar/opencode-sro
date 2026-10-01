@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from sro.core.egress import DestinationRefused
 from sro.core.tools import CATALOG, ToolBroker
 from sro.handlers import HANDLERS, HandlerContext
 
@@ -46,25 +47,59 @@ def test_every_handler_names_a_catalog_spec() -> None:
     assert set(HANDLERS) <= set(CATALOG)
 
 
-def test_no_network_handler_is_registered(active_session) -> None:
+#: The only network tool approved and shipped. Everything else in the catalog
+#: that touches the network is still behind docs/EGRESS.md.
+APPROVED_NETWORK_TOOLS = {"dns_resolve"}
+
+#: Registered handlers that must never exist yet: approved means approved in
+#: writing, with a verdict in the review document.
+BLOCKED_NETWORK_TOOLS = {
+    "http_request",
+    "api_schema_fetch",
+    "auth_session_test",
+    "parameter_probe",
+    "cloud_asset_query",
+    "ad_query",
+    "browser_navigate",
+    "tls_inspect",
+}
+
+
+def test_only_the_approved_network_tool_is_registered(active_session) -> None:
     """The line the module docstring draws, enforced as a test.
 
     If someone adds a handler that talks to the network, this fails and the
-    egress review happens before the code ships, not after.
+    egress review happens before the code ships, not after. `dns_resolve` is the
+    one exception, and it is an explicit one: it is in the review, it is tier 1,
+    and it goes through the transport.
     """
     registered = set(broker(active_session).handlers)
-    network = {
-        "dns_resolve",
-        "http_request",
-        "api_schema_fetch",
-        "auth_session_test",
-        "parameter_probe",
-        "cloud_asset_query",
-        "ad_query",
-        "browser_navigate",
-        "tls_inspect",
-    }
-    assert registered & network == set()
+    assert registered & BLOCKED_NETWORK_TOOLS == set(), (
+        f"a blocked network handler is registered: "
+        f"{sorted(registered & BLOCKED_NETWORK_TOOLS)}"
+    )
+    assert registered & APPROVED_NETWORK_TOOLS == APPROVED_NETWORK_TOOLS
+
+
+def test_no_handler_opens_a_socket_itself(active_session) -> None:
+    """Handlers are callers, not peers.
+
+    A handler that constructs a socket bypasses the transport, and with it every
+    control the transport holds: pinning, limits, the byte cap, the fence. The
+    approved ones import egress for its primitives; none of them may open a
+    connection directly.
+    """
+    import ast
+
+    for path in (Path(__file__).resolve().parents[1] / "sro" / "handlers").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                target = node.func
+                name = getattr(target, "attr", "") or getattr(target, "id", "")
+                assert name not in {"socket", "create_connection", "getaddrinfo"}, (
+                    f"{path.name} calls socket.{name}(); only egress.py may open a socket"
+                )
 
 
 # --- scope_check ---------------------------------------------------------
@@ -562,3 +597,215 @@ def test_a_url_only_call_is_still_scope_checked(active_session) -> None:
     )
     assert result.allowed is False
     assert called == []
+
+
+# --- dns_resolve (the one approved network tool) -------------------------
+
+
+class TestAddressClassification:
+    """The classification is the tool's value.
+
+    `api.example.com -> 10.0.0.5` is a finding about the target, and it is only
+    visible if the answer is labelled. Everything else is plumbing.
+    """
+
+    @pytest.mark.parametrize(
+        "address,expected",
+        [
+            ("93.184.216.34", "public"),
+            ("2606:2800:220:1::1", "public"),
+            ("10.0.0.5", "private"),
+            ("192.168.1.1", "private"),
+            ("127.0.0.1", "loopback"),
+            ("169.254.169.254", "metadata"),
+            ("fd00:ec2::254", "metadata"),
+            ("169.254.1.1", "link-local"),
+            ("224.0.0.1", "multicast"),
+            ("192.0.2.5", "documentation"),
+            ("not-an-address", "unparseable"),
+        ],
+    )
+    def test_every_range_is_labelled(self, address, expected) -> None:
+        from sro.handlers import classify_address
+
+        assert classify_address(address) == expected
+
+
+class TestDnsResolveIsScopeChecked:
+    def test_an_out_of_scope_host_is_refused_before_any_lookup(self, active_session) -> None:
+        def explode(host, port):
+            raise AssertionError("a resolver was called for an out-of-scope host")
+
+        result = run(
+            active_session, "dns_resolve", {"host": "admin.acme.test"}, target="admin.acme.test"
+        )
+        assert result.allowed is False
+        assert result.policy["code"] == "out_of_scope"
+
+    def test_an_unknown_host_is_blocked(self, active_session) -> None:
+        result = run(active_session, "dns_resolve", {"host": "nowhere.example.net"})
+        assert result.allowed is False
+
+    def test_the_host_must_match_the_target_it_was_approved_under(self, active_session) -> None:
+        """`host` is a destination, so it is the policy target — the same rule
+        that produced `url_target_mismatch` for HTTP."""
+        result = run(
+            active_session,
+            "dns_resolve",
+            {"host": "admin.acme.test"},
+            target="api.acme.test",
+        )
+        assert result.allowed is False
+        assert result.policy["code"] == "url_target_mismatch"
+
+
+class TestDnsResolveArguments:
+    def test_a_missing_host_is_refused_with_usage(self, active_session) -> None:
+        broker(active_session).register("dns_resolve", lambda p, d: {"never": "run"})
+        with pytest.raises(ValueError, match="host"):
+            broker(active_session).execute(
+                tool="dns_resolve", parameters={"record_type": "A"}, agent="recon"
+            )
+
+    def test_an_unknown_record_type_is_refused_with_the_supported_set(self, active_session) -> None:
+        """Refused by the catalog before the handler runs, so an unsupported type
+        never becomes a query."""
+        with pytest.raises(ValueError, match="record_type"):
+            broker(active_session).execute(
+                tool="dns_resolve",
+                parameters={"host": "api.acme.test", "record_type": "WKS"},
+                agent="recon",
+            )
+
+        # and the handler's own guard, for a caller that reaches it directly
+        from sro.handlers import HandlerContext, handle_dns_resolve
+
+        out = handle_dns_resolve(
+            HandlerContext(active_session), {"host": "api.acme.test", "record_type": "WKS"}
+        )
+        assert "supported" in out
+        assert "A" in out["supported"]
+
+    def test_the_spec_constrains_the_record_type(self) -> None:
+        from sro.core.tools import CATALOG
+
+        spec = CATALOG["dns_resolve"]
+        assert spec.parameters["record_type"]["choices"] == [
+            "A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA", "PTR",
+        ]
+        with pytest.raises(ValueError):
+            spec.validate({"host": "a.com", "record_type": "ANY"})
+
+
+class TestDnsResolveIsRateLimited:
+    def test_the_spec_is_rate_limited(self) -> None:
+        """A long lookup run must be throttled at the program's number like any
+        other action, so the ladder's step 9 applies."""
+        from sro.core.tools import CATALOG
+
+        assert CATALOG["dns_resolve"].rate_limited is True
+
+    def test_the_ladder_throttles_it(self, active_session) -> None:
+        from sro.core.config import Config
+
+        config = Config.load(active_session.config.root)
+        assert config.rate_limit_per_host_per_minute > 0
+
+
+class TestDnsResolveProducesEvidence:
+    """Unlike the five bookkeeping tools, this one is contact with a subject and
+    its answer is evidence — provided something actually answered."""
+
+    def test_it_is_marked_as_producing_evidence(self) -> None:
+        from sro.core.tools import CATALOG
+
+        assert CATALOG["dns_resolve"].produces_evidence is True
+
+    def test_a_real_answer_is_recorded(self, active_session, monkeypatch) -> None:
+        from sro.handlers import handle_dns_resolve, HandlerContext
+
+        monkeypatch.setattr(
+            "sro.core.egress.resolve_addresses", lambda host, family=2: ["93.184.216.34"]
+        )
+        ctx = HandlerContext(active_session)
+        out = handle_dns_resolve(ctx, {"host": "api.acme.test", "record_type": "A"})
+        assert out["status"] == "NOERROR"
+        assert out["addresses"][0]["classification"] == "public"
+        assert out["resolves_inward"] is False
+        assert "no packet sent by SRO" in out["via"]
+
+    def test_a_name_resolving_inward_is_a_result_not_an_error(self, active_session, monkeypatch) -> None:
+        """This is the finding the tool exists for, so it must not be raised as
+        a failure — and the note has to say it is worth reporting."""
+        from sro.handlers import HandlerContext, handle_dns_resolve
+
+        monkeypatch.setattr(
+            "sro.core.egress.resolve_addresses", lambda host, family=2: ["10.0.0.5"]
+        )
+        out = handle_dns_resolve(HandlerContext(active_session), {"host": "api.acme.test"})
+        assert out["resolves_inward"] is True
+        assert out["addresses"][0]["classification"] == "private"
+        assert "worth reporting" in out["note"]
+        assert "refused to connect" in out["note"]
+
+    def test_a_name_that_does_not_resolve_is_reported_not_raised(self, active_session, monkeypatch) -> None:
+        from sro.core.egress import DestinationRefused
+        from sro.handlers import HandlerContext, handle_dns_resolve
+
+        def missing(host, family=2):
+            raise DestinationRefused(f"{host!r} does not resolve: Name or service not known")
+
+        monkeypatch.setattr("sro.core.egress.resolve_addresses", missing)
+        out = handle_dns_resolve(HandlerContext(active_session), {"host": "nope.acme.test"})
+        assert out["status"] == "NXDOMAIN"
+        assert out["addresses"] == []
+
+
+class TestDnsResolverComesFromTheOperatingSystem:
+    """The nameserver is the operator's, and the target cannot redirect it."""
+
+    def test_no_nameserver_parameter_exists(self) -> None:
+        """A caller-supplied nameserver lets the target decide where a query
+        asking about the target is sent. That is the attack, so the parameter
+        must not exist rather than merely be unused."""
+        import inspect
+
+        from sro.core.egress import system_nameservers
+
+        assert "nameserver" not in inspect.signature(system_nameservers).parameters
+
+    def test_it_reads_the_system_configuration(self, tmp_path) -> None:
+        from sro.core.egress import system_nameservers
+
+        resolv = tmp_path / "resolv.conf"
+        resolv.write_text(
+            "# comment\nnameserver 192.0.2.1\nnameserver 192.0.2.2\n"
+            "nameserver duplicate\nsearch example.com\noptions ndots:2\n"
+        )
+        assert system_nameservers(str(resolv)) == ["192.0.2.1", "192.0.2.2"]
+
+    def test_a_nameserver_line_with_a_hostname_is_skipped_not_resolved(self, tmp_path) -> None:
+        """Resolving it would need a resolver, and the only one available is the
+        file being read."""
+        from sro.core.egress import system_nameservers
+
+        resolv = tmp_path / "resolv.conf"
+        resolv.write_text("nameserver dns.example.com\nnameserver 192.0.2.53\n")
+        assert system_nameservers(str(resolv)) == ["192.0.2.53"]
+
+    def test_an_unspecified_address_is_treated_as_a_config_error(self, tmp_path) -> None:
+        from sro.core.egress import system_nameservers
+
+        resolv = tmp_path / "resolv.conf"
+        resolv.write_text("nameserver 0.0.0.0\n")
+        with pytest.raises(DestinationRefused, match="no usable nameserver"):
+            system_nameservers(str(resolv))
+
+    def test_it_never_falls_back_to_a_public_resolver(self, tmp_path) -> None:
+        """Sending a target's name to a third party is not this tool's decision."""
+        from sro.core.egress import system_nameservers
+
+        resolv = tmp_path / "resolv.conf"
+        resolv.write_text("search example.com\noptions edns0\n")
+        with pytest.raises(DestinationRefused, match="will not fall back to a public resolver"):
+            system_nameservers(str(resolv))

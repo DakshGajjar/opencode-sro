@@ -313,6 +313,33 @@ export const SroPlugin: Plugin = async ({ directory, worktree }) => {
       },
     }),
 
+    sro_resolve: tool({
+      description:
+        "Resolve an in-scope hostname and classify every address it points at. " +
+        "A/AAAA come from the OS resolver, so SRO sends no packet for them; other " +
+        "record types are queried over DNS against your own resolver. A name that " +
+        "resolves to a private, loopback, link-local or metadata range is a result " +
+        "worth reporting, not a failure — SRO noticed and did not connect.",
+      args: {
+        host: tool.schema.string().describe("the in-scope hostname to resolve"),
+        record_type: tool.schema
+          .enum(["A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA", "PTR"])
+          .optional()
+          .describe("record type; defaults to A"),
+      },
+      async execute(args) {
+        return render(
+          await bridge.run(["--json", "execute"], {
+            tool: "dns_resolve",
+            target: args.host,
+            parameters: { host: args.host, record_type: args.record_type ?? "A" },
+            agent: "recon",
+          }),
+          "resolve failed",
+        )
+      },
+    }),
+
     sro_endpoint_inventory: tool({
       description:
         "What the evidence store already knows about a target: endpoints earlier brokered " +

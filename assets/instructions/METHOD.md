@@ -59,6 +59,24 @@ manifest. Say so and ask; do not fill the gap by generating plausible hostnames.
 **Failure mode:** reading this as a scan result. If the endpoint list is short,
 that means little has happened yet, not that there is little there.
 
+### 2b. Resolve — what does this name actually point at
+
+```
+sro_resolve   dns_resolve, once per name and record type
+```
+
+Gate: `IN_SCOPE`, same as everything else.
+
+The one recon tool that exists. It reports each address with a classification —
+`public`, `private`, `loopback`, `link-local`, `metadata`, `multicast` — and the
+classification is the finding. A hostname the program authorizes that resolves
+to `10.0.0.5` is a result worth reporting on its own: split-horizon, a leaked
+internal address, or a rebindable record.
+
+**Failure mode:** treating an inward resolution as a failed lookup. It succeeded.
+SRO noticed and did not connect; those are different things, and the difference
+is the whole reason the tool labels its output.
+
 ### 3. Read — the only way to get evidence without sending anything
 
 ```
@@ -219,11 +237,21 @@ failure to be minimised; it is the information they need.
 
 ## What this method cannot do
 
-Sends no requests. Resolves no DNS. Inspects no TLS. Enumerates nothing,
-passively or actively. Loads no authenticated session. Fetches no schema.
+Sends no requests. Inspects no TLS. Enumerates nothing, passively or actively.
+Loads no authenticated session. Fetches no schema. Brute-forces no parameters.
 
-Every one of those is a real limitation and every one of them is the operator's
-to perform. What remains is the part that should not have been optional anyway:
-deciding authorization by code, recording what happened, refusing to write up
-what was never proved, and keeping the distance between a hypothesis and a
-finding wide enough to be visible from the outside.
+Declared and not implemented: `http_request`, `tls_inspect`, `api_schema_fetch`,
+`auth_session_test`, `parameter_probe`, `browser_navigate`, `cloud_asset_query`,
+`ad_query`. Calling one returns a refusal naming the tools that do work. Ask
+`sro_capabilities` rather than guessing, and check the `implemented` flag.
+
+`dns_resolve` is the one exception and it earns its place: it resolves names and
+classifies every address they point at, which is how you learn that a public
+hostname resolves inward. It is read-only, it goes through the egress transport,
+and it cannot connect to anything.
+
+Every other capability is the operator's to perform. What remains is the part
+that should not have been optional anyway: deciding authorization by code,
+recording what happened, refusing to write up what was never proved, and keeping
+the distance between a hypothesis and a finding wide enough to be visible from
+the outside.

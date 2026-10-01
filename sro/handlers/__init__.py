@@ -25,14 +25,25 @@ evidence, do not evaluate policy, and do not decide scope.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
+import socket  # AF_INET/AF_INET6 constants only; egress opens the sockets
+import time
 from pathlib import Path
 from typing import Any
 
 from ..core.engagement import dedupe_targets
 from ..core.evidence import HYPOTHESIS, OBSERVED
-from ..core.scope import IN_SCOPE, OUT_OF_SCOPE, UNKNOWN, ScopeEngine, check_many
+from ..core.egress import DestinationRefused, LimitExceeded
+from ..core.scope import (
+    IN_SCOPE,
+    OUT_OF_SCOPE,
+    UNKNOWN,
+    ScopeEngine,
+    _is_internal_address,
+    check_many,
+)
 from ..core.util import slugify, truncate, utcnow_iso
 
 #: Directories never walked by `code_search`. Keeps a search from reading
@@ -408,8 +419,198 @@ class HandlerContext:
         return self.session.scope_engine()
 
 
+# --- dns_resolve ----------------------------------------------------------
+
+
+#: How a resolved address is described to a researcher. The classification is
+#: the point of the tool: `api.example.com -> 10.0.0.5` is a finding about a
+#: target that resolves inward, and it is only visible if the answer is labelled.
+def classify_address(address: str) -> str:
+    """`public`, `private`, `loopback`, `link-local`, `metadata`, `multicast`, `reserved`."""
+    from ..core.scope import _is_documentation_address
+
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return "unparseable"
+    if str(parsed) in _METADATA_ADDRESSES or _is_metadata_host_candidate(address):
+        return "metadata"
+    if _is_documentation_address(parsed):
+        return "documentation"
+    if parsed.is_loopback:
+        return "loopback"
+    if parsed.is_link_local:
+        return "link-local"
+    if parsed.is_multicast:
+        return "multicast"
+    if _is_internal_address(parsed):
+        return "private"
+    return "public"
+
+
+#: Reserved names that resolve inward on common cloud metadata setups.
+_METADATA_ADDRESSES = frozenset({"169.254.169.254", "100.100.100.200", "fd00:ec2::254"})
+
+
+def _is_metadata_host_candidate(address: str) -> bool:
+    return address in _METADATA_ADDRESSES
+
+
+def handle_dns_resolve(ctx: "HandlerContext", params: dict[str, Any]) -> Any:
+    """Resolve an in-scope name and classify what it resolves to.
+
+    Reads A/AAAA through the system resolver, which is what the operator's own
+    machine would get, and queries the other record types over DNS directly
+    against that same resolver.
+
+    Two things this deliberately does not do. It does not enumerate: no zone
+    transfer, no brute force, no wordlist. And it does not treat a name that
+    resolves inward as a failure — that is a result worth having, and the
+    classification is reported rather than raised as an error.
+    """
+    from ..core.egress import (
+        DestinationRefused,
+        EgressLimits,
+        _dns_exchange,
+        resolve_addresses,
+        system_nameservers,
+    )
+    from ..core.dnswire import TYPE_BY_NAME, TYPE_NAMES, build_query, parse_message
+
+    host = str(params.get("host") or "").strip().rstrip(".")
+    record_type = str(params.get("record_type") or "A").upper()
+
+    if not host:
+        return {"error": "dns_resolve needs a host", "usage": "dns_resolve(host='api.example.com')"}
+    if record_type not in TYPE_BY_NAME:
+        return {
+            "error": f"unknown record type {record_type!r}",
+            "supported": sorted(TYPE_NAMES.values()),
+        }
+
+    verdict = ctx.scope_engine().check(host)
+    limits = EgressLimits()
+    deadline = time.monotonic() + limits.total_timeout
+    rtype = TYPE_BY_NAME[record_type]
+
+    # The A/AAAA path goes through the OS resolver, so no socket is opened by
+    # SRO at all. That is the better answer when it is available: it is what the
+    # operator's own machine sees, including whatever split-horizon the target
+    # intends.
+    if record_type in ("A", "AAAA"):
+        family = socket.AF_INET if record_type == "A" else socket.AF_INET6
+        via = "system resolver (getaddrinfo); no packet sent by SRO"
+        try:
+            resolved = resolve_addresses(host, family)
+        except DestinationRefused as exc:
+            return {
+                "host": host,
+                "record_type": record_type,
+                "status": "NXDOMAIN" if "does not resolve" in str(exc) else "ERROR",
+                "addresses": [],
+                "error": str(exc),
+                "via": via,
+            }
+
+        addresses = [
+            {"address": address, "classification": classify_address(address)}
+            for address in resolved
+        ]
+        inward = [a for a in addresses if a["classification"] not in ("public", "documentation")]
+        return {
+            "host": host,
+            "record_type": record_type,
+            "status": "NOERROR" if addresses else "NOERROR",
+            "addresses": addresses,
+            "via": via,
+            "resolves_inward": bool(inward),
+            "note": _dns_note(inward),
+        }
+
+    nameservers = system_nameservers()
+    errors: list[str] = []
+    for nameserver in nameservers:
+        try:
+            raw = _dns_exchange(
+                build_query(host, rtype), nameserver, limits=limits, deadline=deadline
+            )
+            message = parse_message(raw)
+        except (DestinationRefused, LimitExceeded) as exc:
+            errors.append(f"{nameserver}: {exc}")
+            continue
+
+        # Answered records and CNAME chain are kept apart. A name that is a CNAME
+        # answers every type with the CNAME and the real answer somewhere else, so
+        # falling back to "show whatever came back" presents a CNAME as if it were
+        # the MX record — which reads as a finding and is not one.
+        matching = [r for r in message.answers if r.rtype == rtype]
+        chain = [r.to_dict() for r in message.answers if r.rtype == 5]
+
+        entries = []
+        inward = []
+        for record in matching:
+            entry = record.to_dict()
+            if record.rtype in (1, 28) and record.data:
+                entry["classification"] = classify_address(record.data)
+                if entry["classification"] not in ("public", "documentation"):
+                    inward.append(entry)
+            entries.append(entry)
+
+        result: dict[str, Any] = {
+            "host": host,
+            "record_type": record_type,
+            "status": message.rcode_name,
+            "authoritative": message.authoritative,
+            "records": entries,
+            "via": f"DNS query to {nameserver}",
+            "resolves_inward": bool(inward),
+        }
+        if chain:
+            result["cname_chain"] = chain
+        if not entries:
+            result["note"] = (
+                f"No {record_type} records at this name"
+                + (
+                    f"; it is a CNAME to {chain[-1].get('target')}, so query that name "
+                    f"instead. A CNAME answer is not a {record_type} record, and it is "
+                    f"not reported as one."
+                    if chain
+                    else "."
+                )
+            )
+        else:
+            result["note"] = _dns_note(inward)
+        return result
+
+    return {
+        "host": host,
+        "record_type": record_type,
+        "status": "ERROR",
+        "records": [],
+        "errors": errors,
+        "via": "system resolver from /etc/resolv.conf",
+    }
+
+
+def _dns_note(inward: list[dict[str, Any]]) -> str:
+    if not inward:
+        return (
+            "Every address resolved to a public range. This is one name's answer at one "
+            "moment; it is not enumeration, and SRO did not query the target directly."
+        )
+    kinds = sorted({entry["classification"] for entry in inward})
+    return (
+        f"This name resolves to a non-public range ({', '.join(kinds)}). That is a result, "
+        f"not an error, and it is worth reporting on its own: an internet-facing hostname "
+        f"resolving inward is either a split-horizon setup, a leaked internal address, or a "
+        f"rebindable record. SRO refused to connect to it, which is a different control "
+        f"from observing it."
+    )
+
+
 HANDLERS = {
     "scope_check": handle_scope_check,
+    "dns_resolve": handle_dns_resolve,
     "endpoint_inventory": handle_endpoint_inventory,
     "code_search": handle_code_search,
     "render_report": handle_render_report,
@@ -419,7 +620,6 @@ HANDLERS = {
 #: Tools the catalog declares that this package does not implement, and why.
 #: Surfaced by `sro capabilities` so the gap is visible rather than inferred.
 NOT_IMPLEMENTED = {
-    "dns_resolve": "needs egress review",
     "http_request": "needs egress review",
     "api_schema_fetch": "needs egress review",
     "auth_session_test": "needs egress review and an explicit approval flow",

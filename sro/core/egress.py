@@ -39,13 +39,16 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
+import struct
 import socket
 import ssl
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
 
+from .dnswire import DNSError
 from .errors import SROError
 from .scope import FORBIDDEN_HOSTS, _is_internal_address
 from .untrusted import render_fenced
@@ -607,3 +610,167 @@ class Transport:
                 kept = b"".join(chunks)[: self.limits.max_response_bytes]
                 return kept, True
         return b"".join(chunks), False
+
+
+def resolve_addresses(host: str, family: int = socket.AF_INET) -> list[str]:
+    """Addresses for `host`, via the operating system's own resolver.
+
+    Lives here rather than in a handler because it is the one lookup that does
+    not open a socket SRO controls — the kernel talks to the configured resolver
+    on our behalf. Keeping it in this module means the invariant "no handler
+    touches the network" stays absolute instead of carrying an exception.
+
+    It is also the better answer where it is available: it is what the operator's
+    own machine sees, including any split-horizon view the target intends.
+    """
+    try:
+        infos = socket.getaddrinfo(host, None, family, socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise DestinationRefused(f"{host!r} does not resolve: {exc.strerror or exc}") from exc
+    seen: list[str] = []
+    for info in infos:
+        address = info[4][0]
+        if address not in seen:
+            seen.append(address)
+    return seen
+
+
+# --- DNS ------------------------------------------------------------------
+#
+# DNS is egress too, and it has one property that makes it different from HTTP:
+# the resolver is almost always a private address, because it is the operator's
+# own router. So the rule "refuse private addresses" cannot apply to the
+# nameserver, and applying it anyway would make the tool useless.
+#
+# What is safe here is narrower and specific: the nameserver comes from the
+# operating system and never from a parameter, so the target under test cannot
+# choose where the query goes. Resolution happens through the operator's own
+# resolver, which already receives every lookup their machine makes — SRO adds
+# no new disclosure by using it. A caller-supplied nameserver would be the
+# attack: it lets the target steer where a query asking about the target is sent.
+
+#: Nameserver sources, in order. `/etc/resolv.conf` is the only one that is
+#: consulted; the loopback entries are what a systemd-resolved or dnsmasq setup
+#: presents, and both mean "ask the local stub".
+_RESOLV_CONF = "/etc/resolv.conf"
+
+
+def system_nameservers(path: str = _RESOLV_CONF) -> list[str]:
+    """The operator's resolvers, read from the OS. Never from a parameter.
+
+    Returns addresses only. A `nameserver` line pointing at a hostname is
+    skipped rather than resolved, because resolving it would need a resolver,
+    and the only one available is the thing being read.
+    """
+    servers: list[str] = []
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise DestinationRefused(
+            f"cannot read {path}: {exc}. SRO will not guess a resolver, and will "
+            f"not accept one as a parameter."
+        ) from exc
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("nameserver"):
+            parts = stripped.split()
+            if len(parts) < 2:
+                continue
+            candidate = parts[1]
+            try:
+                address = ipaddress.ip_address(candidate)
+            except ValueError:
+                continue
+            # an unspecified address is a configuration error, not a server
+            if not address.is_unspecified and str(address) not in servers:
+                servers.append(str(address))
+    if not servers:
+        raise DestinationRefused(
+            f"{path} lists no usable nameserver address. SRO will not fall back to a "
+            f"public resolver: sending a target's name to a third party is not this "
+            f"tool's decision to make."
+        )
+    return servers
+
+
+def _dns_exchange(
+    query: bytes,
+    nameserver: str,
+    *,
+    limits: EgressLimits,
+    deadline: float,
+) -> bytes:
+    """One DNS query over UDP, with a TCP retry when the answer is truncated.
+
+    The retry is the whole reason this is not just `socket.sendto`: a truncated
+    answer is a partial record set, and reporting it as the answer would show a
+    researcher fewer records than exist.
+    """
+    from .dnswire import Message, parse_message
+
+    family = socket.AF_INET6 if ipaddress.ip_address(nameserver).version == 6 else socket.AF_INET
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise LimitExceeded("total timeout exhausted before the DNS query was sent")
+
+    sock = socket.socket(family, socket.SOCK_DGRAM)
+    sock.settimeout(min(limits.read_timeout, max(remaining, 0.001)))
+    try:
+        sock.sendto(query, (nameserver, 53))
+        data, _ = sock.recvfrom(limits.max_response_bytes)
+    except (socket.timeout, TimeoutError) as exc:
+        raise LimitExceeded(f"DNS query to {nameserver} timed out: {exc}") from exc
+    except OSError as exc:
+        raise DestinationRefused(f"DNS query to {nameserver} failed: {exc}") from exc
+    finally:
+        sock.close()
+
+    try:
+        message = parse_message(data)
+    except DNSError as exc:
+        raise DestinationRefused(f"DNS response from {nameserver} is malformed: {exc}") from exc
+
+    if message.truncated:
+        return _dns_over_tcp(query, nameserver, limits=limits, deadline=deadline)
+    return data
+
+
+def _dns_over_tcp(query: bytes, nameserver: str, *, limits: EgressLimits, deadline: float) -> bytes:
+    """DNS over TCP, for answers that exceed the UDP payload limit."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise LimitExceeded("total timeout exhausted before the DNS TCP retry")
+
+    family = socket.AF_INET6 if ipaddress.ip_address(nameserver).version == 6 else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    sock.settimeout(min(limits.connect_timeout, max(remaining, 0.001)))
+    try:
+        sock.connect((nameserver, 53))
+        sock.sendall(struct.pack("!H", len(query)) + query)
+        prefix = _recv_exactly(sock, 2, limits)
+        length = struct.unpack("!H", prefix)[0]
+        if length > limits.max_response_bytes:
+            raise LimitExceeded(
+                f"DNS-over-TCP answer claims {length} bytes, over the "
+                f"{limits.max_response_bytes} byte cap"
+            )
+        return _recv_exactly(sock, length, limits)
+    except (socket.timeout, TimeoutError) as exc:
+        raise LimitExceeded(f"DNS TCP retry to {nameserver} timed out: {exc}") from exc
+    except OSError as exc:
+        raise DestinationRefused(f"DNS TCP retry to {nameserver} failed: {exc}") from exc
+    finally:
+        sock.close()
+
+
+def _recv_exactly(sock: socket.socket, count: int, limits: EgressLimits) -> bytes:
+    chunks: list[bytes] = []
+    received = 0
+    while received < count:
+        chunk = sock.recv(min(8192, count - received))
+        if not chunk:
+            raise DestinationRefused("connection closed mid-answer")
+        chunks.append(chunk)
+        received += len(chunk)
+    return b"".join(chunks)

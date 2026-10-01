@@ -114,9 +114,23 @@ async function installAssets(flags) {
   const instructionPaths = KINDS.flatMap((kind) =>
     mdFilesIn(path.join(ASSETS, kind)).map((name) => `~/.config/opencode/${kind}/${name}`),
   )
-  const configPath = path.join(flags.configDir, "opencode.json")
+  // opencode.jsonc is the filename most installs actually use. Looking only for
+  // opencode.json meant a jsonc user got the assets copied and the instructions
+  // silently never wired, with a message about a file they do not have.
+  const jsonPath = path.join(flags.configDir, "opencode.json")
+  const jsoncPath = path.join(flags.configDir, "opencode.jsonc")
+  const configPath = existsSync(jsonPath) ? jsonPath : existsSync(jsoncPath) ? jsoncPath : null
 
-  if (existsSync(configPath)) {
+  if (configPath && configPath.endsWith(".jsonc")) {
+    // Rewriting a jsonc file as JSON would discard every comment in it, and a
+    // config file is mostly comments. Print the snippet instead of silently
+    // destroying them.
+    console.log(`\n  ${configPath} found (jsonc). Add these to its "instructions" array:`)
+    console.log(
+      '    "instructions": [\n' + instructionPaths.map((p) => `      "${p}"`).join(",\n") + "\n    ]\n",
+    )
+    console.log("  (not editing it: rewriting jsonc as JSON would drop your comments)")
+  } else if (configPath) {
     let config
     try {
       config = JSON.parse(await readFile(configPath, "utf8"))
@@ -138,11 +152,15 @@ async function installAssets(flags) {
       console.log("  opencode.json  instructions[] already current")
     }
   } else {
-    console.log(`\n  no ${configPath} yet. Add these to your opencode.json:\n`)
+    console.log(`\n  no opencode.json or opencode.jsonc in ${flags.configDir}. Add these to it:\n`)
     console.log('    "instructions": [\n' + instructionPaths.map((p) => `      "${p}"`).join(",\n") + "\n    ]\n")
   }
 
-  console.log(`\nsro: ${written} written, ${skipped} skipped. Restart opencode to load them.`)
+  // In a dry run the counter describes what would happen. Saying "written" for
+  // files that were not written makes the one mode whose whole purpose is
+  // inspection the one mode that overstates what it did.
+  const verb = flags.dryRun ? "would write" : "written"
+  console.log(`\nsro: ${written} ${verb}, ${skipped} skipped.${flags.dryRun ? "" : " Restart opencode to load them."}`)
   console.log("sro: to try it without touching a real program, run opencode from")
   console.log("     the directory you installed into (not a subdirectory, or the")
   console.log("     plugin will not resolve):")

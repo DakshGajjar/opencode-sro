@@ -27,7 +27,7 @@ STDLIB_ALLOWED = frozenset(
         "contextlib", "copy", "csv", "dataclasses", "datetime", "email", "enum",
         "fnmatch", "hashlib", "html", "http", "inspect", "io", "ipaddress", "itertools",
         "json", "operator", "os", "pathlib", "re", "shutil", "socket", "ssl",
-        "stat", "string", "subprocess", "sys", "tempfile", "textwrap", "threading",
+        "stat", "string", "struct", "subprocess", "sys", "tempfile", "textwrap", "threading",
         "time", "types", "typing", "unicodedata", "urllib", "uuid", "warnings",
     }
 )

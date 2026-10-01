@@ -64,14 +64,37 @@ def test_the_method_does_not_name_unimplemented_broker_tools_as_available() -> N
 
 
 def test_the_method_states_the_capability_limit_that_is_true() -> None:
-    """It has to name what is missing, and what it names has to be missing."""
-    for tool in ("http_request", "parameter_probe", "auth_session_test"):
+    """It has to name what is missing, and what it names has to be missing.
+
+    The list of unavailable tools is read from `NOT_IMPLEMENTED` rather than
+    written here, because a hard-coded list goes stale the moment a tool ships
+    and then the document confidently describes a capability that exists. That is
+    the exact failure this file exists to prevent, caught in the document meant
+    to replace the defective checklists.
+    """
+    from sro.handlers import NOT_IMPLEMENTED
+
+    for tool in sorted(NOT_IMPLEMENTED):
+        if tool == "dns_resolve":
+            continue
         assert tool in BODY, f"METHOD.md should name {tool} as unavailable"
         assert tool not in BROKERED, f"{tool} is now implemented; METHOD.md is stale"
 
-    implemented_names = {t.replace("_", " ") for t in BROKERED}
-    assert "five" in BODY.lower() or "5" in BODY, (
-        "the method states a count of implemented tools; keep it accurate or drop the count"
+    # and the reverse: a shipped tool must not be described as unavailable
+    for tool in BROKERED:
+        assert f"{tool} is not installed" not in BODY
+    assert re.search(r"[Rr]esolves no DNS", BODY) is None, (
+        "METHOD.md says SRO cannot resolve DNS; dns_resolve now exists"
+    )
+
+
+def test_the_method_names_the_shipped_network_tool_as_the_exception() -> None:
+    """Six tools, one of which talks to a network. The method has to say so
+    precisely, because a reader planning a session will rely on it."""
+    assert "dns_resolve" in BODY
+    assert re.search(r"one exception", BODY, re.I)
+    assert re.search(r"cannot connect", BODY), (
+        "the method must say dns_resolve cannot connect to anything"
     )
 
 

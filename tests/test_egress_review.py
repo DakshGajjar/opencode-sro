@@ -19,6 +19,11 @@ sys.path.insert(0, str(REPO))
 
 from sro.handlers import NOT_IMPLEMENTED  # noqa: E402
 
+#: Every network tool the review rules on: the eight still blocked, plus the one
+#: approved and shipped. A tool appearing in the doc but not here is a tool the
+#: doc has decided something about and nobody is tracking.
+RULED_ON = set(NOT_IMPLEMENTED) | {"dns_resolve"}
+
 DOC = REPO / "docs" / "EGRESS.md"
 BODY = DOC.read_text(encoding="utf-8")
 
@@ -34,7 +39,7 @@ def test_every_unimplemented_tool_has_a_verdict() -> None:
     A tool absent from the table is a tool nobody has looked at, which is
     indistinguishable from a tool nobody objected to.
     """
-    for tool in sorted(NOT_IMPLEMENTED):
+    for tool in sorted(RULED_ON):
         assert re.search(rf"`{re.escape(tool)}`", BODY), f"{tool} has no row in EGRESS.md"
 
 
@@ -42,9 +47,9 @@ def test_the_table_claims_nothing_extra() -> None:
     """A tool named in the doc must be on the list, or the doc is out of date in
     the direction that is most confusing to a reader."""
     rows = set(re.findall(r"^\| `([a-z_]+)` \|", BODY, re.M))
-    assert rows == set(NOT_IMPLEMENTED), {
-        "in doc only": sorted(rows - set(NOT_IMPLEMENTED)),
-        "in NOT_IMPLEMENTED only": sorted(set(NOT_IMPLEMENTED) - rows),
+    assert rows == RULED_ON, {
+        "in doc only": sorted(rows - RULED_ON),
+        "undecided": sorted(RULED_ON - rows),
     }
 
 
@@ -61,18 +66,24 @@ def test_every_row_states_a_decision_and_a_tier() -> None:
         assert re.search(r"Approve|Defer|Refer|Reject", cells[2]), (
             f"{cells[0]} decision is not one of the four: {cells[2][:40]}"
         )
-    assert seen == len(NOT_IMPLEMENTED), f"only {seen} rows parsed"
+    assert seen == len(RULED_ON), f"only {seen} rows parsed"
 
 
-def test_nothing_is_approved_yet() -> None:
-    """Today the honest answer is that no network tool has been reviewed.
+def test_only_dns_resolve_has_been_approved_and_shipped() -> None:
+    """Exactly one network tool is live.
 
-    This is what makes that a fact rather than a claim: the test fails the day
-    the first tool ships, and the failure asks whether the doc changed in the
-    same commit.
+    Written as an explicit list rather than a count so that shipping a second one
+    is a one-line edit that says which one, rather than a number bump that says
+    nothing. The failure is the point: it asks whether the doc was updated in the
+    same commit as the handler.
     """
-    assert len(NOT_IMPLEMENTED) == 9, sorted(NOT_IMPLEMENTED)
-    assert "nothing is approved" in BODY.lower()
+    assert set(NOT_IMPLEMENTED) == {
+        "http_request", "api_schema_fetch", "auth_session_test",
+        "parameter_probe", "cloud_asset_query", "ad_query",
+        "browser_navigate", "tls_inspect",
+    }, sorted(NOT_IMPLEMENTED)
+    assert "one tool is approved and shipped" in BODY.lower()
+    assert "dns_resolve" not in NOT_IMPLEMENTED
 
 
 def test_the_doc_names_the_bypass_that_already_happened() -> None:
@@ -133,13 +144,12 @@ def test_the_two_scope_gaps_the_transport_must_close_are_real() -> None:
     )
 
 
-def test_the_doc_records_that_the_transport_exists_and_approves_nothing() -> None:
-    """The transport being present is the precondition for tier 1, not an
-    approval. Both halves have to stay written down, because the tempting
-    misreading is that a reviewed transport means reviewed tools."""
+def test_the_doc_records_the_transport_and_the_one_approval() -> None:
+    """Both halves stay written down: the transport exists, and exactly one tool
+    was approved on the strength of a verdict written before the handler."""
     assert "sro/core/egress.py" in BODY
-    assert re.search(r"[Nn]o network tool is approved", BODY)
-    assert re.search(r"precondition.{0,40}not an approval|not an approval", BODY)
+    assert re.search(r"Approved and shipped", BODY)
+    assert re.search(r"precondition.{0,40}not the approval|not the approval", BODY)
 
 
 def test_the_doc_names_the_gaps_the_transport_leaves() -> None:
@@ -157,36 +167,28 @@ def test_the_transport_module_exists_and_ships() -> None:
     assert "sro/" in files, "the transport has to ship or no tool can reach it"
 
 
-def test_no_network_tool_is_wired_to_the_transport_yet() -> None:
-    """The one assertion that makes the previous two mean something."""
-    import inspect
-
-    from sro.core import egress
-
-    for name in ("send", "_one", "_redirect_target"):
-        assert callable(getattr(egress.Transport, name, None))
-
+def test_only_dns_resolve_is_wired_to_the_transport() -> None:
+    """The one assertion that makes the doc's approval list mean something."""
     from sro.handlers import HANDLERS
 
-    network = {
-        "http_request", "dns_resolve", "tls_inspect", "api_schema_fetch",
-        "auth_session_test", "parameter_probe", "browser_navigate",
-        "cloud_asset_query", "ad_query",
-    }
-    assert not HANDLERS.keys() & network
+    network = set(NOT_IMPLEMENTED) | {"dns_resolve"}
+    assert HANDLERS.keys() & network == {"dns_resolve"}, sorted(
+        HANDLERS.keys() & network
+    )
 
-    # and no handler imports the transport. Grepping for the word would match the
-    # module docstring and the NOT_IMPLEMENTED reasons, so this looks at imports.
-    import ast
 
-    for handler in (REPO / "sro" / "handlers").glob("*.py"):
-        tree = ast.parse(handler.read_text(encoding="utf-8"))
-        imported: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module)
-        assert not any("egress" in name for name in imported), (
-            f"{handler.name} imports the transport; a handler must be a caller, not a peer"
-        )
+def test_dns_resolve_takes_its_resolver_from_the_operating_system() -> None:
+    """A caller-supplied nameserver is the attack.
+
+    It lets the target under test decide where a query asking about the target is
+    sent. So the parameter must not exist, and the doc has to say why.
+    """
+    from sro.core.egress import system_nameservers
+
+    import inspect
+
+    signature = inspect.signature(system_nameservers)
+    assert "nameserver" not in signature.parameters
+    source = inspect.getsource(system_nameservers)
+    assert "/etc/resolv.conf" in source or "resolv" in source
+    assert re.search(r"[Nn]ever from a parameter|never from a parameter", BODY)
