@@ -34,6 +34,7 @@ from ..core.errors import SROError
 from ..core.evidence import HYPOTHESIS, OBSERVED, VERIFIED
 from ..core.policy import PolicyRequest
 from ..core.session import Session
+from ..core.scope import check_many
 from ..readers import all_capabilities
 
 EXIT_OK = 0
@@ -205,7 +206,7 @@ def cmd_scope(args: argparse.Namespace) -> int:
     engine = session.scope_engine()
 
     if args.targets:
-        _emit({t: engine.check(t).to_dict() for t in args.targets})
+        _emit(check_many(engine, list(args.targets)))
         return EXIT_OK
 
     if not args.target:
@@ -227,6 +228,26 @@ def cmd_scope(args: argparse.Namespace) -> int:
     if decision.status == "UNKNOWN":
         return EXIT_NEEDS_CONFIRMATION
     return EXIT_DENIED
+
+
+def cmd_execute(args: argparse.Namespace) -> int:
+    """Run one brokered tool. This is the only path from a model to a tool."""
+    session = _session(args)
+    payload = _read_stdin_json()
+    result = session.tool_broker().execute(
+        tool=str(payload.get("tool") or ""),
+        # Not str(): a batched target arrives as a list and must stay one, or the
+        # scope engine gets the repr of a list and calls it malformed.
+        target=payload.get("target") or "",
+        parameters=payload.get("parameters") or {},
+        agent=str(payload.get("agent") or "agent"),
+        user_approved=bool(payload.get("user_approved", False)),
+        authenticated=bool(payload.get("authenticated", False)),
+    )
+    _emit(result.to_dict())
+    if result.allowed and not result.error:
+        return EXIT_OK
+    return EXIT_DENIED if result.policy.get("result") == "DENY" else EXIT_NEEDS_CONFIRMATION
 
 
 def cmd_translate(args: argparse.Namespace) -> int:
@@ -448,11 +469,15 @@ def cmd_capabilities(args: argparse.Namespace) -> int:
     # A tool with no handler is a dead end for the model, so the catalog says
     # which ones are actually runnable rather than leaving the agent to find
     # out by calling one.
-    broker = ToolBroker(engine, session.evidence_store())
+    broker = session.tool_broker()
+    from ..handlers import HANDLERS as BUILTIN_HANDLERS
+    from ..handlers import NOT_IMPLEMENTED
+
     _emit(
         {
             "capabilities": engine.describe(),
             "tools": catalog(implemented=set(broker.handlers)),
+            "not_implemented_reason": NOT_IMPLEMENTED,
             "engagement": session.status(),
             "note": (
                 "Only tools with implemented=true have a working handler. A tool with "
@@ -505,6 +530,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("target", nargs="?")
     p.add_argument("--targets", nargs="*", default=[])
     p.set_defaults(func=cmd_scope)
+
+    p = sub.add_parser("execute", help="run one brokered tool (policy-gated, evidence-recorded)")
+    p.set_defaults(func=cmd_execute)
 
     p = sub.add_parser("translate", help="translate a request into a structured objective")
     p.add_argument("request", nargs="?")

@@ -49,6 +49,9 @@ PARAM_INT = "int"
 PARAM_BOOL = "bool"
 PARAM_STR_LIST = "str_list"
 PARAM_STR_MAP = "str_map"
+#: Accepts a single value or a list of them. For where batching is genuinely one call
+#: rather than N, which matters for triage over a long manifest.
+PARAM_STR_OR_LIST = "str_or_list"
 
 
 @dataclass(slots=True)
@@ -62,6 +65,12 @@ class ToolSpec:
     requires_target: bool = True
     requires_auth: bool = False
     rate_limited: bool = True
+    #: Does a successful call of this tool constitute evidence about a target?
+    #: Only true when the tool actually touched the target and returned what it
+    #: saw. A tool that reads local state, resolves names, or writes a record is
+    #: bookkeeping: its call is not evidence, and recording it as an observation
+    #: would let a finding appear evidenced by the act of describing it.
+    produces_evidence: bool = True
     examples: tuple[str, ...] = ()
 
     def validate(self, parameters: dict[str, Any]) -> dict[str, Any]:
@@ -88,6 +97,19 @@ class ToolSpec:
             elif kind == PARAM_BOOL:
                 if not isinstance(value, bool):
                     raise ValueError(f"parameter {key!r} of {self.name!r} must be true or false")
+            elif kind == PARAM_STR_OR_LIST:
+                if isinstance(value, str):
+                    value = [value]
+                if not isinstance(value, (list, tuple)):
+                    raise ValueError(
+                        f"parameter {key!r} of {self.name!r} must be a string or a list of strings"
+                    )
+                value = [str(v) for v in value]
+                if len(value) > 500:
+                    raise ValueError(
+                        f"parameter {key!r} of {self.name!r} accepts at most 500 values; "
+                        "triage in batches"
+                    )
             elif kind == PARAM_STR_LIST:
                 if isinstance(value, str):
                     value = [value]
@@ -177,14 +199,20 @@ _register(
         name="scope_check",
         capability=RECON,
         description=(
-            "Ask the deterministic scope engine whether a target is authorized. "
-            "Always call this before proposing a test; it never performs network activity."
+            "Ask the deterministic scope engine whether one or more targets are authorized. "
+            "Always call this before proposing a test; it never performs network activity. "
+            "Batching is the intended use: triage a whole manifest in one call rather than "
+            "one broker round trip per host."
         ),
         actions=("resolve", "enumerate"),
-        parameters={"target": {"type": PARAM_STRS, "required": True, "max_length": 2048}},
+        parameters={"target": {"type": PARAM_STR_OR_LIST, "required": True, "max_length": 2048}},
         requires_target=False,
         rate_limited=False,
-        examples=("scope_check(target='api.example.com')",),
+        produces_evidence=False,
+        examples=(
+            "scope_check(target='api.example.com')",
+            "scope_check(target=['api.example.com','admin.example.com','other.example.net'])",
+        ),
     )
 )
 
@@ -216,6 +244,7 @@ _register(
         ),
         actions=("fetch_metadata",),
         parameters={"target": {"type": PARAM_STRS, "required": True, "max_length": 2048}},
+        produces_evidence=False,
     )
 )
 
@@ -290,6 +319,7 @@ _register(
         },
         requires_target=False,
         rate_limited=False,
+        produces_evidence=False,
     )
 )
 
@@ -372,6 +402,7 @@ _register(
         },
         requires_target=False,
         rate_limited=False,
+        produces_evidence=False,
     )
 )
 
@@ -394,6 +425,7 @@ _register(
         },
         requires_target=False,
         rate_limited=False,
+        produces_evidence=False,
     )
 )
 
@@ -485,10 +517,15 @@ _PARAMETRIC_ACTIONS = {"http_request": "method"}
 _TARGET_PARAMS = ("target", "url", "host", "domain", "base_dn")
 
 
+def _is_batch(value: Any) -> bool:
+    """True when a value carries several targets rather than one."""
+    return isinstance(value, (list, tuple)) and len(value) > 1
+
+
 def _first_str(parameters: dict[str, Any], names: tuple[str, ...]) -> str:
     for name in names:
         value = parameters.get(name)
-        if isinstance(value, str) and value:
+        if isinstance(value, str) and value:  # a batch is not a target
             return value
         if isinstance(value, list) and value:
             return str(value[0])
@@ -553,7 +590,7 @@ class ToolBroker:
         self,
         *,
         tool: str,
-        target: str = "",
+        target: str | list[str] = "",
         parameters: dict[str, Any] | None = None,
         agent: str = "unknown",
         user_approved: bool = False,
@@ -566,15 +603,34 @@ class ToolBroker:
                 "SRO does not provide arbitrary command execution."
             )
 
-        parameters = spec.validate(dict(parameters or {}))
+        # Callers reach SRO through several surfaces (CLI, plugin, tests) and some
+        # pass `target` as its own argument rather than inside `parameters`.
+        # Normalized before validation so a spec that declares a `target`
+        # parameter behaves the same whichever way it was called.
+        parameters = dict(parameters or {})
+        batched = _is_batch(target)
+        if target and "target" not in parameters and "target" in spec.parameters:
+            parameters["target"] = target
+        parameters = spec.validate(parameters)
+
         action = self._action_for(spec, parameters)
+        # The policy engine judges exactly one target. A batched read-only query has
+        # none, and handing it a stringified list gives the scope engine a target no
+        # rule can ever match. The handler resolves each against the real ScopeEngine.
+        is_batched_call = batched or _is_batch(parameters.get("target"))
+        resolved_target = (target if isinstance(target, str) else "") or _first_str(
+            parameters, _TARGET_PARAMS
+        )
+        if is_batched_call and not spec.requires_target:
+            resolved_target = ""
         request = PolicyRequest(
             tool=spec.name,
             action=action,
-            target=target or _first_str(parameters, _TARGET_PARAMS),
+            target=resolved_target,
             capability=spec.capability,
             destructive=spec.destructive or action in _STATE_CHANGING_ACTIONS,
             requires_auth=spec.requires_auth,
+            requires_target=spec.requires_target and not is_batched_call,
             authenticated=authenticated,
             user_approved=user_approved,
             rate_limited=spec.rate_limited,
@@ -590,9 +646,14 @@ class ToolBroker:
 
         handler = self.handlers.get(spec.name)
         if handler is None:
+            working = sorted(name for name in CATALOG if name in self.handlers)
             message = (
-                f"tool {spec.name!r} passed policy but has no handler registered in this "
-                "installation. The capability exists; the implementation is not installed."
+                f"tool {spec.name!r} has no implementation in this installation.\n\n"
+                f"It passed policy, so the capability and the target are fine; there is simply "
+                f"no handler. Do not hand-write a script to do it instead - that is the one "
+                f"thing the broker exists to prevent.\n\n"
+                f"Tools that do work now: {working}\n"
+                f"Run sro_capabilities for the full surface and what each tool offers."
             )
             return BrokerResult(allowed=False, policy=decision.to_dict(), error=message)
 
@@ -600,6 +661,12 @@ class ToolBroker:
         try:
             raw = handler(parameters, decision)
         except Exception as exc:  # noqa: BLE001 - a tool failure must be evidence, not a crash
+            if not spec.produces_evidence:
+                return BrokerResult(
+                    allowed=True,
+                    policy=decision.to_dict(),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
             self.evidence.record_observation(
                 tool=spec.name,
                 agent=agent,
@@ -614,6 +681,14 @@ class ToolBroker:
                 allowed=True,
                 policy=decision.to_dict(),
                 error=f"{type(exc).__name__}: {exc}",
+            )
+
+        if not spec.produces_evidence:
+            return BrokerResult(
+                allowed=True,
+                policy=decision.to_dict(),
+                result=raw,
+                evidence_id="",
             )
 
         record = self.evidence.record_observation(

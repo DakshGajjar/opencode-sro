@@ -234,6 +234,12 @@ class PolicyRequest:
     capability: str = ""
     destructive: bool = False
     requires_auth: bool = False
+    #: Is there a single target for the scope step to judge. A batched read-only
+    #: query has none, so it is False and the handler resolves each itself; a tool
+    #: carrying one target gets the scope confirmation for free even if its spec
+    #: does not require a target. Defaults True so a caller that omits it is
+    #: still held to the strict rule.
+    requires_target: bool = True
     authenticated: bool = False
     user_approved: bool = False
     rate_limited: bool = True
@@ -533,7 +539,7 @@ class PolicyEngine:
         # 6. scope
         scope_decision: ScopeDecision | None = None
         if request.capability in NETWORK_CAPABILITIES:
-            if not request.target:
+            if not request.target and request.requires_target:
                 return PolicyDecision(
                     result=DENY,
                     reason="a network capability requires an explicit target",
@@ -542,40 +548,49 @@ class PolicyEngine:
                     capability=request.capability,
                     detail=detail,
                 )
-            scope_decision = self.scope_engine.check(request.target)
-            if scope_decision.status == OUT_OF_SCOPE:
-                return PolicyDecision(
-                    result=DENY,
-                    reason=scope_decision.reason,
-                    code="out_of_scope",
-                    target=request.target,
-                    tool=request.tool,
-                    capability=request.capability,
-                    scope_status=OUT_OF_SCOPE,
-                    scope=scope_decision.to_dict(),
-                    detail=detail,
-                )
-            if scope_decision.status == UNKNOWN:
-                # Never ALLOW. Deny by default, or ask if the operator prefers.
-                result = ASK if self.config.unknown_scope_action == "ask" else DENY
-                return PolicyDecision(
-                    result=result,
-                    reason=(
-                        f"target is not established as authorized: {scope_decision.reason}"
-                        + (
-                            "; clarify with the program or add the target to the manifest"
-                            if result == ASK
-                            else ""
-                        )
-                    ),
-                    code="scope_unknown",
-                    target=request.target,
-                    tool=request.tool,
-                    capability=request.capability,
-                    scope_status=UNKNOWN,
-                    scope=scope_decision.to_dict(),
-                    detail=detail,
-                )
+            scope_decision = self.scope_engine.check(request.target) if request.target else None
+
+            # `requires_target` separates a tool that acts on a target from one
+            # that only asks about it. `scope_check` is the second: denying it
+            # for an out-of-scope target would make it impossible to discover
+            # that a target is out of scope, which is the one thing it exists to
+            # do. The verdict is still computed and reported, so the answer is
+            # available either way, and a batched query resolves each target in
+            # the handler against this same engine.
+            if scope_decision is not None and request.requires_target:
+                if scope_decision.status == OUT_OF_SCOPE:
+                    return PolicyDecision(
+                        result=DENY,
+                        reason=scope_decision.reason,
+                        code="out_of_scope",
+                        target=request.target,
+                        tool=request.tool,
+                        capability=request.capability,
+                        scope_status=OUT_OF_SCOPE,
+                        scope=scope_decision.to_dict(),
+                        detail=detail,
+                    )
+                if scope_decision.status == UNKNOWN:
+                    # Never ALLOW. Deny by default, or ask if the operator prefers.
+                    result = ASK if self.config.unknown_scope_action == "ask" else DENY
+                    return PolicyDecision(
+                        result=result,
+                        reason=(
+                            f"target is not established as authorized: {scope_decision.reason}"
+                            + (
+                                "; clarify with the program or add the target to the manifest"
+                                if result == ASK
+                                else ""
+                            )
+                        ),
+                        code="scope_unknown",
+                        target=request.target,
+                        tool=request.tool,
+                        capability=request.capability,
+                        scope_status=UNKNOWN,
+                        scope=scope_decision.to_dict(),
+                        detail=detail,
+                    )
 
         # 7. destructive operations
         is_destructive = request.destructive or request.action in DESTRUCTIVE_ACTIONS

@@ -819,3 +819,24 @@ class ScopeEngine:
             "wildcard_includes_apex": self.wildcard_includes_apex,
             "deny_private_networks": self.deny_private_networks,
         }
+
+
+def check_many(engine: "ScopeEngine", targets: "list[str]") -> dict:
+    """Resolve several targets and tally the verdicts.
+
+    Shared by the broker handler and the `sro scope --targets` command so the two
+    cannot drift. The counts live here rather than in the OpenCode plugin because
+    a tally over scope verdicts is security logic, and a plugin that computes one
+    is a second implementation of the scope engine.
+    """
+    results = {t: engine.check(t).to_dict() for t in targets}
+    counts = {IN_SCOPE: 0, OUT_OF_SCOPE: 0, UNKNOWN: 0}
+    for decision in results.values():
+        counts[decision["status"]] = counts.get(decision["status"], 0) + 1
+    return {
+        "checked": len(targets),
+        "in_scope": counts[IN_SCOPE],
+        "out_of_scope": counts[OUT_OF_SCOPE],
+        "unknown": counts[UNKNOWN],
+        "results": results,
+    }

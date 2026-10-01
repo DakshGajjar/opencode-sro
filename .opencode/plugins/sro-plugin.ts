@@ -235,14 +235,101 @@ export const SroPlugin: Plugin = async ({ directory, worktree }) => {
 
     sro_check_scope: tool({
       description:
-        "Ask the deterministic scope engine whether a target is authorized. " +
-        "Returns IN_SCOPE, OUT_OF_SCOPE or UNKNOWN with the rule that decided it. " +
-        "UNKNOWN means blocked: it is never a yes. Performs no network activity.",
+        "Ask the deterministic scope engine whether one or more targets are authorized. " +
+        "Returns IN_SCOPE, OUT_OF_SCOPE or UNKNOWN per target, with the rule that decided " +
+        "it. UNKNOWN means blocked: it is never a yes. Performs no network activity. " +
+        "Pass a list to triage a whole manifest in one call — one round trip per host is " +
+        "both slow and how a model ends up guessing.",
       args: {
-        target: tool.schema.string().describe("host, URL, CIDR, repository or asset identifier"),
+        target: tool.schema
+          .union([tool.schema.string(), tool.schema.array(tool.schema.string())])
+          .describe("one target, or a list of targets to triage together"),
       },
       async execute(args) {
-        return render(await bridge.run(["--json", "scope", args.target]), "scope check failed")
+        const targets = Array.isArray(args.target) ? args.target : [args.target]
+        // The tally lives in the CLI, not here. Counting scope verdicts is
+        // security logic, and a plugin that does it is a second implementation
+        // of the scope engine that nobody reviewed.
+        return render(
+          await bridge.run(["--json", "scope", "--targets", ...targets]),
+          "scope check failed",
+        )
+      },
+    }),
+
+    sro_execute: tool({
+      description:
+        "Run a brokered SRO tool. Every call is evaluated by the policy engine first, so " +
+        "this is the only path from a model to a tool. Implemented now: scope_check, " +
+        "endpoint_inventory, code_search, render_report, record_hypothesis. Anything else " +
+        "in the catalog is declared but not implemented and will refuse — check " +
+        "sro_capabilities rather than guessing.",
+      args: {
+        tool: tool.schema
+          .string()
+          .describe("the SRO tool name, as listed by sro_capabilities"),
+        target: tool.schema.string().optional().describe("target, where the tool takes one"),
+        parameters: tool.schema.any().optional().describe("the tool's own parameters"),
+      },
+      async execute(args) {
+        return render(
+          await bridge.run(["--json", "execute"], {
+            tool: args.tool,
+            target: args.target ?? "",
+            parameters: args.parameters ?? {},
+            agent: "agent",
+          }),
+          "tool execution refused",
+        )
+      },
+    }),
+
+    sro_code_search: tool({
+      description:
+        "Search the local source tree for a pattern, or run the built-in sink rules when " +
+        "the pattern is '*'. Local and read-only: no network, nothing executed. Results " +
+        "are leads, not findings — confirm a sink is reachable before reporting it. " +
+        "Cannot read outside the working directory.",
+      args: {
+        pattern: tool.schema
+          .string()
+          .describe("regex, or '*' to run only the built-in sink rules"),
+        path: tool.schema.string().optional().describe("subtree to search; defaults to '.'"),
+        max_results: tool.schema.number().optional().describe("cap on pattern matches"),
+      },
+      async execute(args) {
+        return render(
+          await bridge.run(["--json", "execute"], {
+            tool: "code_search",
+            parameters: {
+              pattern: args.pattern || "*",
+              path: args.path ?? ".",
+              max_results: args.max_results ?? 100,
+            },
+            agent: "code",
+          }),
+          "code search failed",
+        )
+      },
+    }),
+
+    sro_endpoint_inventory: tool({
+      description:
+        "What the evidence store already knows about a target: endpoints earlier brokered " +
+        "actions touched, methods, status codes, and which tools ran. A local read of what " +
+        "has already happened, not a scan. It discovers nothing new.",
+      args: {
+        target: tool.schema.string().describe("the target to summarize"),
+      },
+      async execute(args) {
+        return render(
+          await bridge.run(["--json", "execute"], {
+            tool: "endpoint_inventory",
+            target: args.target,
+            agent: "agent",
+          }),
+          "endpoint inventory failed",
+        )
       },
     }),
 
@@ -277,7 +364,9 @@ export const SroPlugin: Plugin = async ({ directory, worktree }) => {
       description:
         "The full SRO tool and capability surface, plus the current engagement status. " +
         "Read this to learn what you are allowed to do. There is no shell and no " +
-        "platform API: only the tools listed here exist.",
+        "platform API: only the tools listed here exist. Check the `implemented` flag — " +
+        "a tool with implemented=false is a declared capability with nothing behind it, " +
+        "and calling it wastes a turn.",
       args: {},
       async execute() {
         return render(await bridge.run(["capabilities"]), "capabilities unavailable")

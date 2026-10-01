@@ -46,7 +46,7 @@ STATE_FILENAME = "session.json"
 MANIFEST_FILENAME = "manifest.json"
 
 
-@dataclass(slots=True)
+@dataclass(slots=False)
 class Session:
     """Holds the loaded engagement and everything derived from it."""
 
@@ -240,6 +240,30 @@ class Session:
 
     def evidence_store(self) -> EvidenceStore:
         return self.evidence
+
+    def tool_broker(self) -> Any:
+        """A broker with the built-in handlers attached, built once and reused.
+
+        Cached because a broker is the thing a caller registers extra handlers
+        on. Returning a fresh one per call silently discards those
+        registrations, so a test that registers a stub http_request and then
+        calls through the session gets the unimplemented refusal instead — which
+        reads like a policy failure rather than the bug it is.
+
+        Safe to cache: the policy engine and evidence store it holds are both
+        session state, not per-call state.
+        """
+        broker = getattr(self, "_broker", None)
+        if broker is None:
+            from ..handlers import HandlerContext, register_all
+            from .tools import ToolBroker
+
+            broker = register_all(
+                ToolBroker(self.policy_engine(), self.evidence_store()),
+                HandlerContext(self),
+            )
+            object.__setattr__(self, "_broker", broker)
+        return broker
 
     @property
     def state(self) -> str:
