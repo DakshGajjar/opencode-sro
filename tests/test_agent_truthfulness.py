@@ -276,3 +276,35 @@ def test_commands_that_cannot_act_on_a_target_say_so(name: str) -> None:
     assert re.search(r"sends no requests|cannot send requests", text), (
         f"{name}.md does not state that the researcher performs the request"
     )
+
+
+def test_scope_instructions_document_what_the_manifest_cannot_enforce() -> None:
+    """Product-scoped programs are the common case, not the exotic one.
+
+    A product string the engine stores but cannot enforce reads as checked, and
+    that gap has to be stated in the instruction the agent actually reads rather
+    than only in a design document nobody opens mid-session.
+    """
+    body = (REPO / ".opencode" / "instructions" / "SCOPE.md").read_text(encoding="utf-8")
+
+    assert re.search(r"cannot enforce|not enforceable", body, re.I), (
+        "SCOPE.md must say some scope statements are not enforceable"
+    )
+    assert re.search(r"[Pp]roduct-level", body), "the unenforceable kind must be named"
+    assert re.search(r"shared hosting zone|shared zone", body, re.I), (
+        "SCOPE.md must document the wildcard-over-shared-zone refusal"
+    )
+    assert re.search(r"Never widen a wildcard", body), (
+        "the tempting remedy is widening the wildcard; say not to"
+    )
+
+
+def test_the_shared_zone_refusal_is_actually_implemented() -> None:
+    """The instruction must not describe a control that does not exist."""
+    import inspect
+
+    from sro.core.session import Session
+
+    signature = inspect.signature(Session.activate)
+    assert "accept_shared_zones" in signature.parameters
+    assert signature.parameters["accept_shared_zones"].default is False

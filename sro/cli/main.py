@@ -174,7 +174,11 @@ def _review_payload(session: Session) -> dict[str, Any]:
 
 def cmd_activate(args: argparse.Namespace) -> int:
     session = _session(args)
-    engagement = session.activate(actor=args.actor or "researcher", force=args.force)
+    engagement = session.activate(
+        actor=args.actor or "researcher",
+        force=args.force,
+        accept_shared_zones=args.accept_shared_zones,
+    )
     _emit(
         {
             "status": "ACTIVE",
@@ -517,6 +521,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("activate", help="researcher confirmation")
     p.add_argument("--actor", default="researcher")
     p.add_argument("--force", action="store_true", help="activate despite an empty scope")
+    p.add_argument(
+        "--accept-shared-zones",
+        action="store_true",
+        help="activate despite a wildcard scope rule over a shared hosting zone, where the "
+             "rule would authorize other tenants. Recorded in the audit log with your name.",
+    )
     p.set_defaults(func=cmd_activate)
 
     p = sub.add_parser("deactivate", help="revoke activation")

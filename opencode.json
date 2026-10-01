@@ -6,6 +6,7 @@
     ".opencode/instructions/SCOPE.md",
     ".opencode/instructions/EVIDENCE.md",
     ".opencode/instructions/SAFETY.md",
+    ".opencode/instructions/METHOD.md",
     ".opencode/instructions/PROVIDERS.md"
   ],
   "provider": {
@@ -16,9 +17,15 @@
         "baseURL": "http://127.0.0.1:11434/v1"
       },
       "models": {
-        "lfm2.5": { "name": "LFM 2.5 (fast local)" },
-        "qwen3:14b": { "name": "Qwen3 14B (local reasoning)" },
-        "spark-x2.5": { "name": "Spark X2.5 (security local)" }
+        "lfm2.5": {
+          "name": "LFM 2.5 (fast local)"
+        },
+        "qwen3:14b": {
+          "name": "Qwen3 14B (local reasoning)"
+        },
+        "spark-x2.5": {
+          "name": "Spark X2.5 (security local)"
+        }
       }
     }
   },

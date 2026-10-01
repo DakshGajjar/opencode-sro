@@ -774,3 +774,76 @@ def _recv_exactly(sock: socket.socket, count: int, limits: EgressLimits) -> byte
         chunks.append(chunk)
         received += len(chunk)
     return b"".join(chunks)
+
+
+# --- shared hosting zones -------------------------------------------------
+#
+# A wildcard scope rule says "every name under this domain is authorized". For a
+# domain the program owns exclusively that is fine and often correct. For a domain
+# on a wildcard DNS zone it authorizes every other tenant on that zone, and those
+# tenants hold other people's data.
+#
+# This is not hypothetical. `*.zendesk.com` — the obvious reading of "Zendesk's web
+# surface" — resolves for arbitrary labels: a random string under it lands on
+# Zendesk's shared front end, which serves every customer instance. Authorizing it
+# authorizes every customer's ticket data, and nothing in the manifest says so,
+# because the program expresses its scope in product names the engine cannot
+# match at all.
+#
+# The check is a probe: ask for a name that cannot have been created, and see
+# whether it answers. A domain whose authoritative data returns a name nobody
+# registered is a shared zone, and a wildcard rule over it is a claim about other
+# people's hosts.
+
+#: Characters that cannot appear in a DNS label, so this string is guaranteed not
+#: to be a name anyone could have registered or provisioned.
+_PROBE_PREFIX = "sro-shared-zone-probe"
+
+
+def zone_accepts_arbitrary_names(
+    domain: str,
+    *,
+    resolver: Resolver | None = None,
+) -> dict[str, Any]:
+    """Does `domain` resolve for names nobody could have created?
+
+    Returns a verdict rather than a bool, because "it answers" and "it does not"
+    are both worth reporting: the first is a hazard, and the second is the only
+    thing that makes a wildcard rule defensible.
+
+    The probe label is unpredictable, so an operator who wants to hide a shared
+    zone cannot pre-create the exact name this asks for and answer it themselves.
+    """
+    import secrets
+
+    resolve = resolver or system_resolver
+    label = f"{_PROBE_PREFIX}-{secrets.token_hex(8)}"
+    probe = f"{label}.{domain.strip('.').lower()}"
+
+    try:
+        answers = resolve(probe, 53)
+    except DestinationRefused:
+        # The name did not resolve. That is the good answer, and it is reported as
+        # evidence rather than as a failure: it is what makes the wildcard safe.
+        return {
+            "domain": domain,
+            "probe": probe,
+            "shared_zone": False,
+            "reason": "the probe name does not resolve, so this domain is not a wildcard zone",
+        }
+
+    addresses = sorted({address for address, _ in answers})
+    return {
+        "domain": domain,
+        "probe": probe,
+        "shared_zone": True,
+        "addresses": addresses,
+        "reason": (
+            f"{probe} resolves to {', '.join(addresses)}. This domain answers for names "
+            f"that were never created, so it is a shared hosting zone. A wildcard scope "
+            f"rule over it authorizes every other tenant on that zone, not just the "
+            f"program's own hosts — and those tenants hold other people's data. Scope the "
+            f"program's hosts explicitly instead, and record the exclusion of other tenants "
+            f"as a human obligation, because no rule here will enforce it."
+        ),
+    }

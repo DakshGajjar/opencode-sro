@@ -26,7 +26,7 @@ STDLIB_ALLOWED = frozenset(
         "__future__", "abc", "argparse", "ast", "base64", "binascii", "collections",
         "contextlib", "copy", "csv", "dataclasses", "datetime", "email", "enum",
         "fnmatch", "hashlib", "html", "http", "inspect", "io", "ipaddress", "itertools",
-        "json", "operator", "os", "pathlib", "re", "shutil", "socket", "ssl",
+        "json", "operator", "os", "pathlib", "re", "secrets", "shutil", "socket", "ssl",
         "stat", "string", "struct", "subprocess", "sys", "tempfile", "textwrap", "threading",
         "time", "types", "typing", "unicodedata", "urllib", "uuid", "warnings",
     }

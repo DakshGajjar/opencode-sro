@@ -496,12 +496,59 @@ class Session:
         )
         return rendered
 
-    def activate(self, *, actor: str = "researcher", force: bool = False) -> Engagement:
+    #: Resolver used by `shared_zone_findings`. Overridable so the check is
+    #: testable without a network, and so a single seam controls every lookup SRO
+    #: makes rather than each call site reaching for its own.
+    _zone_resolver: Any = None
+
+    def shared_zone_findings(self) -> list[dict[str, Any]]:
+        """Wildcard scope rules sitting over a shared hosting zone.
+
+        A wildcard rule is a claim about every name under a domain. Where that
+        domain answers for names nobody created, the claim reaches other people's
+        hosts — other tenants, other customers' data — and nothing in the manifest
+        records that, because the program usually expresses the exclusion in words
+        the matcher cannot read.
+
+        Each wildcard rule is probed once, through the same resolver seam as
+        `dns_resolve`, and only the verdict is kept. No name is contacted.
+        """
+        engagement = self.engagement
+        if engagement is None:
+            return []
+
+        from .egress import zone_accepts_arbitrary_names
+
+        domains: set[str] = set()
+        for target in engagement.in_scope_targets():
+            name = (target.identifier or "").strip()
+            if name.startswith("*.") and name.count(".") >= 1:
+                domains.add(name[2:].strip(".").lower())
+
+        findings = []
+        for domain in sorted(domains):
+            verdict = zone_accepts_arbitrary_names(domain, resolver=self._zone_resolver)
+            if verdict["shared_zone"]:
+                findings.append({**verdict, "rule": f"*.{domain}"})
+        return findings
+
+    def activate(
+        self,
+        *,
+        actor: str = "researcher",
+        force: bool = False,
+        accept_shared_zones: bool = False,
+    ) -> Engagement:
         """Activate the staged manifest. The only path to ACTIVE.
 
         Refuses when scope could not be established, unless the researcher
         explicitly overrides. There is no silent override and no timeout that
         auto-activates.
+
+        Also refuses a wildcard scope rule over a shared hosting zone, unless the
+        researcher accepts it by name. `force` covers an empty manifest and does
+        not cover this: accepting every tenant on a SaaS zone is a different
+        decision from accepting an incomplete one, and it deserves its own word.
         """
         engagement = self.require_engagement()
         assert self.manifest is not None
@@ -511,6 +558,23 @@ class Session:
                 "refusing to activate: no scope entries were established, so SRO does not know "
                 "what is authorized. Import the engagement brief, add targets manually with "
                 "`sro scope add`, or re-run `sro load` with read-only credentials."
+            )
+
+        shared = self.shared_zone_findings()
+        if shared and not accept_shared_zones:
+            detail = "\n".join(
+                f"  {item['rule']} -> {item.get('addresses', [])}" for item in shared
+            )
+            raise ConfigError(
+                "refusing to activate: a wildcard scope rule sits over a shared hosting "
+                "zone.\n\n"
+                f"{detail}\n\n"
+                "That zone answers for names nobody created, so the rule authorizes every "
+                "other tenant on it, not just the program's own hosts. Those tenants hold "
+                "other people's data.\n\n"
+                "Fix it by scoping the program's hosts explicitly. If you have checked that "
+                "and accept the exposure, re-run with --accept-shared-zones; that is recorded "
+                "in the audit log with your name."
             )
 
         self.manifest.status = "confirmed"

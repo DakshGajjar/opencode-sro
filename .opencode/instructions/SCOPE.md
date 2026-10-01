@@ -77,3 +77,41 @@ The researcher may well be right that a target is theirs. The manifest is what
 the program published, and programs change. Say so, point at `sro scope add`, and
 let them decide. Do not add it yourself and do not proceed on the strength of
 their assertion alone.
+
+## Scope the manifest cannot enforce
+
+Some programs describe their scope in words no matcher can read: "Zendesk Front
+End", "our mobile apps", "anything we sell". The manifest can hold that text and
+SRO will store it, but nothing will act on it. A product string the engine can
+accept but cannot enforce is worse than leaving it out, because it reads as
+checked.
+
+Be explicit about which kind of statement each scope entry is:
+
+- **Host-level** — a domain, wildcard, CIDR, repository or asset id. Enforced by
+  the matcher. Every action passes through it.
+- **Product-level** — a product family or contract. Not enforceable. It is a human
+  obligation, and SRO will not protect you there.
+
+When an engagement has product-level scope, say so during `sro review`, before
+activation, and repeat it when reporting. "Three hosts are authorized and the rest
+of the program relies on you knowing which products those hosts belong to" is a
+sentence the researcher needs to hear. Silently returning `IN_SCOPE` for a host
+that belongs to a product nobody authorized is how that becomes an incident.
+
+## Wildcards over shared hosting zones
+
+A wildcard rule is a claim about every name under a domain. Where that domain
+answers for names nobody created — a SaaS vendor's shared zone — the rule
+authorizes every other tenant on it, and those tenants hold other people's data.
+
+`sro` probes each wildcard rule at activation and refuses to activate over a
+shared zone unless the researcher passes `--accept-shared-zones`, which is
+recorded in the audit log with their name. If activation was refused, the remedy
+is to scope the program's own hosts explicitly. Never widen a wildcard to make a
+blocked target pass; that is the one edit that turns a scope problem into someone
+else's breach.
+
+Note what this cannot catch: an explicitly named host that happens to be a
+customer tenant. SRO cannot tell a first-party host from a tenant inside it. That
+distinction comes from the program, and it is a human obligation.
