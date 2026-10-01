@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any
 
-from ..base import strip_html
+from ..base import is_program_shell, strip_html
 
 __all__ = ["extract_public_intigriti"]
 
@@ -154,6 +154,10 @@ def extract_public_intigriti(html: str) -> dict[str, Any]:
         if len(text) > 400:
             out["description"] = text[:2000]
 
+    # Same shell check as the other two readers: a rendered app frame is not a
+    # program, and its title is not a program name.
+    if is_program_shell(out):
+        return {}
     if not out.get("name"):
         return {}
     return out

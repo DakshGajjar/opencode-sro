@@ -12,7 +12,7 @@ import json
 import re
 from typing import Any
 
-from ..base import strip_html
+from ..base import is_program_shell, strip_html
 
 __all__ = ["extract_public_hackerone"]
 
@@ -148,6 +148,19 @@ def extract_public_hackerone(html: str) -> dict[str, Any]:
 
     if scope["in_scope"] or scope["out_of_scope"]:
         out["scope"] = scope
+
+    # The shell check goes here, before the fallbacks below — not at the end.
+    # Those fallbacks invent `name` from the <title> and `policy` from the whole
+    # page, and a check placed after them is circular: it looks for evidence among
+    # fields the extractor has just fabricated, so a client-rendered frame always
+    # passes. Evidence has to mean "the page carried program-shaped structured
+    # content", which is only knowable here.
+    #
+    # Without this, HackerOne's own name became a program and the whole page
+    # became its policy — and policy text reaches a model through the untrusted
+    # fence.
+    if is_program_shell(out):
+        return {}
 
     if not out.get("name"):
         title = re.search(r"(?is)<title[^>]*>(.*?)</title>", html)

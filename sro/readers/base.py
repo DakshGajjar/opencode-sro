@@ -245,6 +245,43 @@ def scheme_of(url: str) -> str:
     return urlsplit(url).scheme or ""
 
 
+#: Fields that only a real program page carries. A page whose extractable
+#: content is a name, a description and a title is a client-rendered shell, and
+#: reading one as a program is how a portal's own name becomes a "program" with
+#: script text as its policy — text that then reaches a model through the
+#: untrusted fence. Measured against live Bugcrowd and HackerOne in September
+#: 2026: both render program pages client-side, so the anonymous path returns a
+#: shell for essentially every program.
+#:
+# `name`, `description` and `policy` are deliberately NOT here, because every
+# extractor fabricates them as a fallback — `name` from the <title>,
+# `description` and `policy` from `strip_html(page)`. A shell check that counts
+# any of them as evidence is circular: it looks for proof in fields the extractor
+# has just invented, so a client-rendered frame always passes. That is not
+# hypothetical; it is how HackerOne's own name became a program whose policy was
+# the whole page.
+PROGRAM_EVIDENCE_FIELDS = frozenset(
+    {
+        "handle", "code", "url", "program_url", "launch_date", "submission_state",
+        "structured_scopes", "targets", "scope", "scope_text",
+        "rules", "instructions", "safe_harbor", "disclosure_policy",
+        "restrictions", "known_issues", "known_issues_text", "categories", "groups",
+    }
+)
+
+
+def is_program_shell(fields: dict[str, object]) -> bool:
+    """True when this looks like a rendered app shell rather than a program.
+
+    Name, title, description and a URL are not evidence: every site has those,
+    including the site itself. Anything from `PROGRAM_EVIDENCE_FIELDS` is.
+    """
+    for key, value in fields.items():
+        if key in PROGRAM_EVIDENCE_FIELDS and value:
+            return False
+    return True
+
+
 def _meaningful_preview(body: str, limit: int = 200) -> str:
     """A preview worth reading inside an error message.
 

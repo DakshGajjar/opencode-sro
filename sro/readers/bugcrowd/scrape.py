@@ -23,7 +23,7 @@ from collections.abc import Iterator
 from html import unescape
 from typing import Any
 
-from ..base import strip_html
+from ..base import is_program_shell, strip_html
 
 __all__ = ["extract_public_program", "strip_html"]
 
@@ -292,19 +292,9 @@ def extract_public_program(html: str) -> dict[str, Any]:
 
     prose = _extract_prose(html)
 
-    # A page is not a program because it has a <title>. Bugcrowd's public pages
-    # render client-side, so the shell answers 200 with the site chrome and a
-    # title, and the previous version read that as a program named after the
-    # portal — with script text as its description, in a field that reaches a
-    # model. Require something that only a real program page carries.
-    _PROGRAM_EVIDENCE = (
-        "code", "url", "program_url", "launch_date", "submission_state",
-        "rules", "safe_harbor", "disclosure_policy", "scope_text",
-        "targets", "scope", "instructions",
-    )
-    if not any(key in program for key in _PROGRAM_EVIDENCE) and not any(
-        prose.get(key) for key in ("rules", "safe_harbor", "disclosure_policy", "scope_text")
-    ):
+    # A client-rendered shell is not a program. Shared with the other two readers
+    # so the rule is one implementation and not three that can drift.
+    if is_program_shell({**program, **prose}):
         return {}
 
     if not program.get("name"):

@@ -710,3 +710,84 @@ class TestShellPagesAreNotPrograms:
         from sro.readers.base import strip_html
 
         assert "PAYLOAD" not in strip_html("<p>a</p><script>PAYLOAD</script><p>b</p>")
+
+
+# --- one shell check, three readers --------------------------------------
+#
+# Both major platforms render program pages client-side as of September 2026:
+# bugcrowd.com/engagements/<code> answers 200 with 107KB and no scope, and
+# hackerone.com/<handle> answers 200 with 3.6KB and no scope. So the anonymous
+# path returns a shell for essentially every program, and the shell check is the
+# difference between "no program" and "a program named after the portal".
+
+
+class TestNoReaderInventsAProgramFromAClientSideShell:
+    @pytest.mark.parametrize(
+        "extract",
+        [
+            "sro.readers.bugcrowd.scrape:extract_public_program",
+            "sro.readers.hackerone.scrape:extract_public_hackerone",
+            "sro.readers.intigriti.scrape:extract_public_intigriti",
+        ],
+    )
+    def test_a_shell_yields_nothing(self, extract: str) -> None:
+        import importlib
+
+        module_name, _, attribute = extract.partition(":")
+        fn = getattr(importlib.import_module(module_name), attribute)
+        shell = (
+            "<!DOCTYPE html><html><head><title>Bugcrowd Hacker Portal</title></head>"
+            '<body><div id="root"></div><script src="/app.js"></script>'
+            + "y" * 4000
+            + "</body></html>"
+        )
+        assert fn(shell) == {}
+
+    def test_the_evidence_list_excludes_manufactured_fields(self) -> None:
+        """`name` is scraped from <title> and `description` from the page body, so
+        neither is evidence that a program exists."""
+        from sro.readers.base import PROGRAM_EVIDENCE_FIELDS
+
+        assert "name" not in PROGRAM_EVIDENCE_FIELDS
+        assert "description" not in PROGRAM_EVIDENCE_FIELDS
+
+    def test_a_shell_check_run_after_the_fallbacks_is_circular(self) -> None:
+        """The bug this was written after.
+
+        HackerOne's extractor sets `policy` from the whole page as a fallback, so
+        placing the check after that block made every shell look like evidence.
+        Asserted structurally: with fabricated fields present, the check must
+        still call it a shell.
+        """
+        from sro.readers.base import is_program_shell
+
+        fabricated = {
+            "name": "HackerOne",                 # from <title>
+            "description": "HackerOne ..." * 20,  # from the page body
+            "policy": "HackerOne ..." * 20,      # from the page body
+        }
+        assert is_program_shell(fabricated) is True
+
+    def test_structured_scope_counts_as_evidence(self) -> None:
+        from sro.readers.base import is_program_shell
+
+        assert is_program_shell({"name": "Acme", "handle": "acme"}) is False
+        assert is_program_shell({"name": "Acme", "scope": {"in_scope": ["a.test"]}}) is False
+
+    @pytest.mark.parametrize(
+        "page,expected_name",
+        [
+            (
+                "<html><head><title>Acme | Bug Bounty</title></head><body>"
+                "<h2>Rules</h2><p>No denial of service testing. Automated scanning is "
+                "permitted at no more than ten requests per second.</p>"
+                "<h2>Safe harbor</h2><p>Good faith research conducted within these rules "
+                "is authorized under safe harbor.</p></body></html>",
+                "Acme",
+            ),
+        ],
+    )
+    def test_a_real_page_still_parses(self, page: str, expected_name: str) -> None:
+        from sro.readers.bugcrowd.scrape import extract_public_program
+
+        assert extract_public_program(page)["name"] == expected_name
