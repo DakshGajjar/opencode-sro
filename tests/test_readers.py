@@ -791,3 +791,93 @@ class TestNoReaderInventsAProgramFromAClientSideShell:
         from sro.readers.bugcrowd.scrape import extract_public_program
 
         assert extract_public_program(page)["name"] == expected_name
+
+
+# --- a bare code is the common case, and it used to fail on all three ------
+#
+# `urlsplit("https://zendesk")` puts the whole string in netloc and leaves path
+# empty, so a path-only scan finds nothing. All three readers scanned only the
+# path, so `sro load zendesk` failed on every provider with "could not determine a
+# program code from 'zendesk'" — for an input that *was* the code. The message
+# was worse than the failure: it sent the researcher hunting for a URL problem
+# they did not have.
+
+
+class TestBareCodesAndSharedExtraction:
+    @pytest.mark.parametrize(
+        "reader_name",
+        [
+            "sro.readers.bugcrowd.reader:BugcrowdReader",
+            "sro.readers.hackerone.reader:HackerOneReader",
+            "sro.readers.intigriti.reader:IntigritiReader",
+        ],
+    )
+    def test_a_bare_code_is_a_code(self, reader_name: str) -> None:
+        import importlib
+
+        module_name, _, attribute = reader_name.partition(":")
+        reader = getattr(importlib.import_module(module_name), attribute)
+        assert reader.program_code_from_url("zendesk") == "zendesk"
+
+    @pytest.mark.parametrize("code", ["curl", "acme-corp", "ab", "x" * 64])
+    def test_code_shapes(self, code: str) -> None:
+        from sro.readers.base import extract_program_code
+
+        assert extract_program_code(code, provider="X") == code
+
+    def test_a_one_character_input_is_not_a_code(self) -> None:
+        """Too short to be a real handle, and accepting junk here means a typo
+        becomes a request for some other program."""
+        from sro.readers.base import extract_program_code
+
+        with pytest.raises(Exception, match="could not determine"):
+            extract_program_code("a", provider="X")
+
+    def test_a_dotted_host_without_a_scheme_is_not_treated_as_a_code(self) -> None:
+        """`example.com` names a host. Guessing it is a program code would be a
+        guess, and the anchor scan below is where the code actually comes from."""
+        from sro.readers.base import extract_program_code
+
+        with pytest.raises(Exception, match="could not determine"):
+            extract_program_code("example.com", provider="X")
+
+    def test_an_explicit_host_is_still_not_a_code(self) -> None:
+        from sro.readers.base import extract_program_code
+
+        with pytest.raises(Exception, match="could not determine"):
+            extract_program_code("https://zendesk", provider="X")
+
+    def test_the_error_explains_the_accepted_forms(self) -> None:
+        from sro.readers.base import extract_program_code
+
+        with pytest.raises(Exception) as caught:
+            extract_program_code("https://example.com/", provider="X")
+        message = str(caught.value)
+        assert "bare code" in message
+        assert "netloc=" in message and "path=" in message, (
+            "the message should show what it parsed, since that is the whole reason "
+            "the old one misled"
+        )
+
+    def test_the_handle_comes_before_the_page_name(self) -> None:
+        """HackerOne URLs put the handle early and the page late:
+        hackerone.com/<handle>/policy. A reverse scan answers "policy"."""
+        from sro.readers.hackerone.reader import HackerOneReader
+
+        assert HackerOneReader.program_code_from_url("hackerone.com/globex/policy") == "globex"
+
+    def test_all_three_readers_share_one_implementation(self) -> None:
+        """They were three copies, and a bug fixed in one left two broken."""
+        import inspect
+
+        from sro.readers.base import extract_program_code
+        from sro.readers.bugcrowd.reader import BugcrowdReader
+        from sro.readers.hackerone.reader import HackerOneReader
+        from sro.readers.intigriti.reader import IntigritiReader
+
+        for reader in (BugcrowdReader, HackerOneReader, IntigritiReader):
+            source = inspect.getsource(reader.program_code_from_url)
+            assert "extract_program_code(" in source, (
+                f"{reader.__name__} reimplements extraction instead of sharing it"
+            )
+        assert extract_program_code.__doc__

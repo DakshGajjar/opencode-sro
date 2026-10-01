@@ -31,7 +31,7 @@ from ...core.errors import (
     ProviderSchemaError,
     ProviderUnavailableError,
 )
-from ..base import BaseReader, ReaderCapabilities, normalize_url, strip_html
+from ..base import BaseReader, ReaderCapabilities, extract_program_code, normalize_url, strip_html
 from .normalizer import normalize_hackerone_payload
 from .scrape import extract_public_hackerone
 
@@ -108,18 +108,14 @@ class HackerOneReader(BaseReader):
 
     @staticmethod
     def program_code_from_url(url: str) -> str:
-        text = (url or "").strip()
-        if not text:
-            raise ProviderError("no HackerOne URL supplied")
-        parts = urlsplit(text if "://" in text else "https://" + text)
-        segments = [s for s in parts.path.split("/") if s]
-        noise = {"programs", "directory", "policies", "scope", "security", "about"}
-        for segment in segments:
-            if segment.lower() in noise:
-                continue
-            if re.match(r"^[a-z0-9][a-z0-9_\-]{1,64}$", segment, re.IGNORECASE):
-                return segment
-        raise ProviderError(f"could not determine a HackerOne program handle from {url!r}")
+        """Pull the HackerOne handle out of any URL shape, or a bare handle."""
+        return extract_program_code(
+            url,
+            provider="HackerOne",
+            kind="program",
+            anchors=(),
+            noise=frozenset({"programs", "directory", "policies", "scope", "security", "about"}),
+        )
 
     # -- GraphQL (read-only) ----------------------------------------------
 

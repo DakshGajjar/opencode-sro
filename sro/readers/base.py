@@ -270,6 +270,76 @@ PROGRAM_EVIDENCE_FIELDS = frozenset(
 )
 
 
+#: A segment that looks like a program code or handle rather than a path part.
+_CODE_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{1,64}$")
+
+
+def extract_program_code(
+    text: str,
+    *,
+    provider: str,
+    kind: str = "program",
+    anchors: tuple[str, ...] = (),
+    noise: frozenset[str] = frozenset(),
+) -> str:
+    """Pull a program code or handle out of whatever the researcher typed.
+
+    Shared by all three readers because they were three copies of this function,
+    and a bug fixed in one of them leaves the other two broken — which is how a
+    bare code like `zendesk` came to fail on all three while the code that
+    accepts it was obviously right there.
+
+    The bare-code case is handled first, because it is the one a path-only scan
+    cannot see: `urlsplit("https://zendesk")` puts the whole string in `netloc`
+    and leaves `path` empty, so scanning the path finds nothing. The resulting
+    error was worse than the failure — it claimed it could not determine a code
+    from an input that *was* the code, which sends the researcher looking for a
+    URL problem they do not have.
+
+    Only applied when the input carried no scheme. `https://zendesk` names a
+    host, and treating a host as a program code would be a guess.
+    """
+    from ..core.errors import ProviderError
+
+    original = (text or "").strip()
+    if not original:
+        raise ProviderError(f"no {provider} {kind} code or URL supplied")
+
+    had_scheme = "://" in original
+    parts = urlsplit(original if had_scheme else f"https://{original}")
+
+    if not had_scheme and _CODE_SHAPE.match(parts.netloc) and "." not in parts.netloc:
+        return parts.netloc
+
+    segments = [s for s in parts.path.split("/") if s]
+    for anchor in anchors:
+        for index, segment in enumerate(segments):
+            if segment.lower() != anchor:
+                continue
+            # The code is the segment after the anchor; a trailing anchor like
+            # ".../engagements" has none, which is not an error by itself.
+            if index + 1 < len(segments) and _CODE_SHAPE.match(segments[index + 1]):
+                return segments[index + 1]
+            break
+
+    # First match forward, not last. HackerOne URLs put the handle early and the
+    # page name late — hackerone.com/<handle>/policy — so a reverse scan returns
+    # "policy". The two readers disagreed here before this was shared, and
+    # picking the wrong one is a silent wrong answer rather than a failure.
+    for segment in segments:
+        if segment.lower() in noise:
+            continue
+        if _CODE_SHAPE.match(segment):
+            return segment
+
+    raise ProviderError(
+        f"could not determine a {provider} {kind} code from {original!r}.\n\n"
+        f"Accepted forms: a bare code ({kind} codes have no dots), a full program URL, "
+        f"or a program URL with a path. Got netloc={parts.netloc!r} and "
+        f"path={parts.path!r}, so there was no code segment to read."
+    )
+
+
 def is_program_shell(fields: dict[str, object]) -> bool:
     """True when this looks like a rendered app shell rather than a program.
 

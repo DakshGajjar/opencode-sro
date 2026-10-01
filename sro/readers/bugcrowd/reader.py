@@ -40,7 +40,7 @@ from ...core.errors import (
     ProviderSchemaError,
     ProviderUnavailableError,
 )
-from ..base import BaseReader, RawResponse, ReaderCapabilities, normalize_url, strip_html
+from ..base import BaseReader, RawResponse, ReaderCapabilities, extract_program_code, normalize_url, strip_html
 from .parser import (
     parse_auth_requirements,
     parse_known_issues,
@@ -119,29 +119,14 @@ class BugcrowdReader(BaseReader):
 
     @staticmethod
     def program_code_from_url(url: str) -> str:
-        """Pull the program code out of any Bugcrowd URL shape."""
-        text = (url or "").strip()
-        if not text:
-            raise ProviderError("no Bugcrowd URL supplied")
-        parts = urlsplit(text if "://" in text else "https://" + text)
-        segments = [s for s in parts.path.split("/") if s]
-        for anchor in ("programs", "engagements", "bug-bounty"):
-            if anchor in segments:
-                index = segments.index(anchor)
-                if index + 1 < len(segments):
-                    candidate = segments[index + 1]
-                    if re.match(r"^[A-Za-z0-9_\-]{2,64}$", candidate):
-                        return candidate
-        for segment in reversed(segments):
-            if re.match(r"^[A-Za-z0-9][A-Za-z0-9_\-]{2,63}$", segment) and segment not in {
-                "bug-bounty",
-                "programs",
-                "engagements",
-                "rules",
-                "scope",
-            }:
-                return segment
-        raise ProviderError(f"could not determine a Bugcrowd program code from {url!r}")
+        """Pull the program code out of any Bugcrowd URL shape, or a bare code."""
+        return extract_program_code(
+            url,
+            provider="Bugcrowd",
+            kind="program",
+            anchors=("programs", "engagements", "bug-bounty"),
+            noise=frozenset({"bug-bounty", "programs", "engagements", "rules", "scope"}),
+        )
 
     def _api_get(self, operation: str, path: str) -> RawResponse:
         if operation not in ALLOWED_API_PATHS:
