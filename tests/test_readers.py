@@ -161,7 +161,13 @@ def test_unrecognizable_page_raises_rather_than_inventing_scope(config: Config) 
     reader.transport = StubTransport({"/programs/acme": _html("<html><body>nothing here</body></html>")})
     with pytest.raises(ProviderSchemaError) as excinfo:
         reader.read_engagement("acme")
-    assert "no recognizable program metadata" in str(excinfo.value)
+    # The point of the test is that it raises rather than inventing scope. The
+    # message now also has to distinguish "page has nothing readable" from "page
+    # needed auth", because those send a researcher to opposite places.
+    message = str(excinfo.value)
+    assert "no machine-readable scope" in message
+    assert "does not publish program scope anonymously" in message
+    assert "sro import" in message, "the working path has to be named"
 
 
 def test_empty_payload_yields_nothing() -> None:
@@ -534,3 +540,173 @@ def test_json_serializable_round_trip() -> None:
     engagement = read_engagement_from_payload(BUGCROWD_BRIEF, code="acme")
     text = json.dumps(engagement.to_dict(), default=str)
     assert Engagement.from_dict(json.loads(text)).sro_id == engagement.sro_id
+
+
+# --- Bugcrowd's public pages, as measured ---------------------------------
+#
+# These encode a fact about the provider that changes over time and is easy to
+# regress silently, so it is written down. Measured against live Bugcrowd in
+# September 2026:
+#
+#   /programs/<code>          404  (the scheme moved to /engagements/<code>)
+#   /engagements/<code>       200, program metadata present, scope absent
+#   /engagements/<code>/scope 200, ~6KB of client-side bootstrap, no scope table
+#
+# The consequence is that `sro load` cannot establish Bugcrowd scope without a
+# read-only API token, and must say so rather than blaming the URL or the code.
+
+
+class TestBugcrowdPublicPaths:
+    def test_the_reader_knows_both_program_paths(self) -> None:
+        """The old path still 404s, so a reader pinned to it fails on every
+        program for a reason unrelated to the researcher or the program."""
+        from sro.readers.bugcrowd.reader import PUBLIC_PROGRAM_PATHS
+
+        assert PUBLIC_PROGRAM_PATHS[0] == "/engagements/{code}"
+        assert "/programs/{code}" in PUBLIC_PROGRAM_PATHS
+
+    def test_a_404_keeps_its_status_in_the_message(self, config: Config) -> None:
+        """A 404 and a 500 are different problems, and a researcher needs to tell
+        them apart to know whether retrying could ever help."""
+        from sro.core.errors import ProviderUnavailableError
+        from sro.readers.bugcrowd.reader import BugcrowdReader
+
+        reader = BugcrowdReader(config.provider("bugcrowd"))
+        reader.transport = _always_500()
+        with pytest.raises(ProviderUnavailableError) as caught:
+            reader._get_public_program("acme")
+        assert "500" in str(caught.value)
+        assert "acme" in str(caught.value)
+
+    def test_missing_public_scope_says_bugcrowd_publishes_none(self, config: Config) -> None:
+        """Not "no scope table found". The old wording sent people looking for a
+        URL problem; there is no URL problem."""
+        from sro.core.errors import ProviderSchemaError
+        from sro.readers.bugcrowd.reader import BugcrowdReader
+
+        reader = BugcrowdReader(config.provider("bugcrowd"))
+        reader.transport = _scope_shell()
+        with pytest.raises(ProviderSchemaError) as caught:
+            reader._get_public_scope("acme")
+        message = str(caught.value)
+        assert "does not publish program scope anonymously" in message
+        assert "retrying will not help" in message
+        assert "sro import" in message, "a working path has to be named"
+        assert "credentials" in message
+
+    def test_an_unparseable_page_names_the_import_path(self, config: Config) -> None:
+        from sro.core.errors import ProviderSchemaError
+        from sro.readers.bugcrowd.reader import BugcrowdReader
+
+        reader = BugcrowdReader(config.provider("bugcrowd"))
+        reader.transport = _scope_shell()
+        with pytest.raises(ProviderSchemaError) as caught:
+            reader._get_public_program("acme")
+        message = str(caught.value)
+        assert "no machine-readable scope" in message
+        assert "sro import" in message
+
+    def test_the_body_preview_is_readable(self) -> None:
+        """A 404 from a JavaScript app returns a page of meta tags. Dumping the
+        first 500 characters buries the fact that the URL answered."""
+        from sro.readers.base import _meaningful_preview
+
+        shell = (
+            "<!DOCTYPE html><html><head><title>Resource not found 404</title>"
+            "<meta name='x' content='y'></head><body>" + "x" * 600 + "</body></html>"
+        )
+        preview = _meaningful_preview(shell)
+        assert "404" in preview
+        assert "meta name" not in preview
+        assert len(preview) < len(shell)
+        assert "bytes" in preview, "the real size matters more than the snippet"
+
+    def test_a_plain_text_error_body_is_passed_through(self) -> None:
+        from sro.readers.base import _meaningful_preview
+
+        assert _meaningful_preview("rate limit exceeded, retry in 60s") == (
+            "rate limit exceeded, retry in 60s"
+        )
+
+
+# --- test doubles --------------------------------------------------------
+
+
+def _always_500():
+    """A transport whose every request fails with 500, so both program paths are
+    exercised and the status has to survive into the message."""
+    from sro.readers.base import RawResponse
+    from sro.core.errors import ProviderUnavailableError
+
+    class T:
+        def get(self, url, **kw):
+            raise ProviderUnavailableError(f"{url}: HTTP 500", body_preview="boom")
+
+    return T()
+
+
+def _scope_shell():
+    """What Bugcrowd actually returns for a public scope page: HTTP 200, a few KB
+    of client-side bootstrap, and no scope table anywhere in it."""
+    from sro.readers.base import RawResponse
+
+    class T:
+        def get(self, url, **kw):
+            return RawResponse(
+                url=url,
+                status=200,
+                body=("<!DOCTYPE html><html><head><title>Bugcrowd Hacker Portal</title>"
+                      "</head><body><div id=\"root\"></div><script>" + "x" * 5000),
+                headers={},
+            )
+
+    return T()
+
+
+# --- a page is not a program because it has a <title> ---------------------
+#
+# Bugcrowd's public pages render client-side, so the shell answers 200 with the
+# site chrome. Before these tests, the reader read that as a program named after
+# the portal, with script text as its description — a field that reaches a model
+# through the untrusted fence. A scrape bug feeding the model is the same
+# failure as a hostile target returning instructions, reached from the other end.
+
+
+class TestShellPagesAreNotPrograms:
+    def test_a_client_side_shell_yields_nothing(self) -> None:
+        from sro.readers.bugcrowd.scrape import extract_public_program
+
+        shell = (
+            "<!DOCTYPE html><html><head><title>Bugcrowd Hacker Portal</title></head>"
+            '<body><div id="root"></div><script>' + "x" * 5000
+        )
+        assert extract_public_program(shell) == {}
+
+    def test_a_real_program_page_still_parses(self) -> None:
+        """The fix is not "reject everything with a title"; that would break the
+        one case that works."""
+        from sro.readers.bugcrowd.scrape import extract_public_program
+
+        page = (
+            "<html><head><title>Acme Bug Bounty</title></head><body>"
+            "<h2>Rules</h2><p>No denial of service testing. Automated scanning is "
+            "permitted.</p>"
+            "<h2>Safe harbor</h2><p>Good faith research is authorized.</p></body></html>"
+        )
+        program = extract_public_program(page)
+        assert program["name"] == "Acme Bug Bounty"
+        assert "Automated scanning" in program["rules"]
+        assert "Good faith" in program["safe_harbor"]
+
+    def test_an_unterminated_script_cannot_leak_into_prose(self) -> None:
+        """Scrape output reaches a model. Malformed markup must not be able to put
+        raw script text into a field that reads as the platform's own prose."""
+        from sro.readers.base import strip_html
+
+        assert strip_html("<p>before</p><script>" + "PAYLOAD" * 20) == "before"
+        assert strip_html("<p>before</p><style>" + "PAYLOAD" * 20) == "before"
+
+    def test_a_closed_script_still_cannot_leak(self) -> None:
+        from sro.readers.base import strip_html
+
+        assert "PAYLOAD" not in strip_html("<p>a</p><script>PAYLOAD</script><p>b</p>")

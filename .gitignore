@@ -26,3 +26,5 @@ marketplace-submission*
 
 # Local clones of other repos (awesome-opencode, etc). Never part of this repo.
 awesome-opencode/
+*.tgz
+pr-body.md

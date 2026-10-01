@@ -53,6 +53,12 @@ from .scrape import extract_public_program
 API_BASE = "https://api.bugcrowd.com"
 WEB_BASE = "https://bugcrowd.com"
 
+#: Bugcrowd moved program pages from /programs/<code> to /engagements/<code>.
+#: The old path still 404s, so a reader pinned to it fails on every program for a
+#: reason that has nothing to do with the researcher or the program. Both are
+#: tried, newest first, and the one that answers is recorded as the source.
+PUBLIC_PROGRAM_PATHS = ("/engagements/{code}", "/programs/{code}")
+
 #: Sparse fieldsets. SRO asks for the engagement fields it actually needs so a
 #: read does not pull report data or other researcher's submissions.
 PROGRAM_FIELDS = "name,code,description,url,tags,submission_state,launch_date,closed_date"
@@ -165,9 +171,23 @@ class BugcrowdReader(BaseReader):
         return _coerce_list(payload)
 
     def _list_programs_public(self, page: int, per_page: int) -> list[dict[str, Any]]:
-        url = f"{WEB_BASE}/programs/index?page={page}"
-        response = self.transport.get(url)
-        return extract_public_program(response.body)
+        last: Exception | None = None
+        for path in ("/engagements", "/programs/index"):
+            try:
+                response = self.transport.get(normalize_url(f"{WEB_BASE}{path}?page={page}"))
+            except (ProviderUnavailableError, ProviderAuthError) as exc:
+                last = exc
+                continue
+            found = extract_public_program(response.body)
+            if found:
+                return found
+        raise ProviderUnavailableError(
+            f"Bugcrowd's public program listing did not return a readable index at "
+            f"{WEB_BASE}/engagements or {WEB_BASE}/programs/index"
+            + (f" ({last})" if last else "")
+            + ". The listing is not published anonymously; use `sro import` with a "
+            "hand-written brief, or supply read-only credentials."
+        )
 
     def get_program(self, code: str) -> dict[str, Any]:
         """One program's public metadata."""
@@ -181,13 +201,44 @@ class BugcrowdReader(BaseReader):
         return self._get_public_program(code)
 
     def _get_public_program(self, code: str) -> dict[str, Any]:
-        url = normalize_url(f"{WEB_BASE}/programs/{quote(code)}")
-        response = self.transport.get(url)
+        response = None
+        url = ""
+        failures: list[str] = []
+        for path in PUBLIC_PROGRAM_PATHS:
+            candidate = normalize_url(f"{WEB_BASE}{path.format(code=quote(code))}")
+            try:
+                response = self.transport.get(candidate)
+                url = candidate
+                break
+            except (ProviderUnavailableError, ProviderAuthError) as exc:
+                # Kept, not swallowed: a 404 and a 500 are different problems and a
+                # researcher needs to tell them apart to know whether to retry.
+                failures.append(f"{candidate} ({exc})")
+                continue
+        if response is None:
+            raise ProviderUnavailableError(
+                f"Bugcrowd has no readable public page for {code!r}:\n  "
+                + "\n  ".join(failures)
+                + f"\n\nIf the code is right, the program is not published anonymously. "
+                "Use `sro import <brief.json>` with a hand-written brief."
+            )
+
         program = extract_public_program(response.body)
         if not program:
+            # Reachable, but nothing machine-readable. This is the common case and
+            # the old message blurred it with the auth case, so a researcher went
+            # hunting for credentials when the real answer was that Bugcrowd does
+            # not publish scope anonymously at all.
             raise ProviderSchemaError(
-                f"{url}: page returned no recognizable program metadata; "
-                "the program may require authentication or the layout may have changed"
+                f"{url} is reachable ({len(response.body)} bytes) but carries no "
+                "machine-readable scope: no targets, categories or wildcard rules. "
+                "Bugcrowd does not publish program scope anonymously — the page is "
+                "rendered client-side or gated. This is not fixable by retrying, by a "
+                "different URL, or with a program code.\n\n"
+                f"Use `sro import <brief.json>` with a hand-translated brief, and keep "
+                "product-level scope statements out of the manifest: a product string "
+                "the matcher can store but cannot enforce reads as checked. "
+                "See the shared-zone check before adding any wildcard rule."
             )
         program.setdefault("code", code)
         program["_retrieval_mode"] = RETRIEVAL_PUBLIC
@@ -236,15 +287,43 @@ class BugcrowdReader(BaseReader):
         return self._get_public_scope(code)
 
     def _get_public_scope(self, code: str) -> dict[str, Any]:
-        url = normalize_url(f"{WEB_BASE}/programs/{quote(code)}/scope")
-        response = self.transport.get(url)
-        scope = extract_public_program(response.body).get("scope") or {}
-        if not scope:
-            raise ProviderSchemaError(
-                f"{url}: no scope table found on the public page; "
-                "scope is not publicly exposed for this program"
-            )
-        return scope
+        """Public scope. Measured in September 2026: there is none.
+
+        Bugcrowd's public pages render scope client-side, so every path here
+        returns a shell with no scope table in it — `/programs/<code>/scope` 404s,
+        and `/engagements/<code>/scope` answers 200 with ~6KB of JavaScript
+        bootstrap and no targets. Bugcrowd publishes scope through its API, which
+        needs a read-only token.
+
+        So this function exists to say that precisely, and to name the two paths
+        that work, rather than to fail with a status code that sends the
+        researcher looking for a URL problem that does not exist.
+        """
+        tried: list[str] = []
+        for path in ("/engagements/{code}/scope", "/programs/{code}/scope"):
+            url = normalize_url(f"{WEB_BASE}{path.format(code=quote(code))}")
+            try:
+                response = self.transport.get(url)
+            except (ProviderUnavailableError, ProviderAuthError) as exc:
+                tried.append(f"{url} ({exc})")
+                continue
+            scope = extract_public_program(response.body).get("scope") or {}
+            if scope:
+                return scope
+            tried.append(f"{url} (reachable, {len(response.body)} bytes, no scope table)")
+
+        raise ProviderSchemaError(
+            "Bugcrowd does not publish program scope anonymously. Tried:\n  "
+            + "\n  ".join(tried)
+            + "\n\nThe pages are rendered client-side, so there is nothing to parse; this "
+            "is not a wrong URL and retrying will not help. Two paths that do work:\n\n"
+            f"  1. read-only credentials — set providers.bugcrowd.credentials to "
+            f"\"environment\" and token_env in sro.json, which uses {API_BASE}/v1 "
+            "and never writes.\n"
+            "  2. `sro import <brief.json>` with a brief you have translated by hand.\n\n"
+            "For a product-scoped program, keep product names out of the manifest: a "
+            "product string the matcher can store but cannot enforce reads as checked."
+        )
 
     def get_rules(self, code: str) -> dict[str, Any]:
         """Testing rules and restrictions as text."""

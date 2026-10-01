@@ -187,9 +187,11 @@ class ReadOnlyTransport:
                 raise ProviderAuthError(
                     f"{url}: platform refused the request ({exc.code}). "
                     "Configure optional read-only credentials or import the brief manually.",
-                    body_preview=body[:500],
+                    body_preview=_meaningful_preview(body),
                 ) from exc
-            raise ProviderUnavailableError(f"{url}: HTTP {exc.code}", body_preview=body[:500]) from exc
+            raise ProviderUnavailableError(
+                f"{url}: HTTP {exc.code}", body_preview=_meaningful_preview(body)
+            ) from exc
         except urllib.error.URLError as exc:
             raise ProviderUnavailableError(f"{url}: {exc.reason}") from exc
         except http.client.HTTPException as exc:
@@ -243,6 +245,23 @@ def scheme_of(url: str) -> str:
     return urlsplit(url).scheme or ""
 
 
+def _meaningful_preview(body: str, limit: int = 200) -> str:
+    """A preview worth reading inside an error message.
+
+    A 404 from a JavaScript app returns a page whose first 500 characters are
+    doctype, meta tags and stylesheet links. Dumping that into a warning buries
+    the one fact that matters — the URL answered, and with what. Keeps the title,
+    otherwise the visible text, and always states the real size.
+    """
+    import re
+
+    title = re.search(r"<title[^>]*>(.*?)</title>", body, re.S | re.I)
+    if title:
+        return f"<title>{re.sub(chr(92)+'s+', ' ', title.group(1)).strip()[:limit]}> +{len(body)} bytes"
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body)).strip()
+    return text[:limit] + (f" +{len(body)} bytes" if len(text) > limit else "")
+
+
 def _is_private_address(address: str) -> bool:
     import ipaddress
 
@@ -272,7 +291,14 @@ def strip_html(value: str) -> str:
     Scripts and styles are dropped entirely rather than unwrapped, so inline
     payloads in a page never reach a downstream parser as text.
     """
-    text = _SCRIPT_STYLE.sub(" ", value or "")
+    # An unterminated <script> means the regex below does not match, and raw
+    # script text then flows out as prose. Scrape targets reach a model through
+    # the untrusted fence, so malformed markup must not be able to inject text
+    # into a field that looks like the platform's own prose. Close the tag first,
+    # or drop the remainder.
+    value = value or ""
+    value = re.sub(r"<(script|style)\b[^>]*>[\s\S]*$", r"<\1></\1>", value, flags=re.I)
+    text = _SCRIPT_STYLE.sub(" ", value)
     text = _ANY_TAG.sub(" ", text)
     text = html_unescape(text)
     return _WHITESPACE.sub(" ", text).strip()
