@@ -36,8 +36,9 @@
   "scripts": {
     "build": "bun build .opencode/plugins/sro-plugin.ts --outfile dist/index.js --target node --format esm --external @opencode-ai/plugin",
     "test": "python3 bin/run-tests.py",
-    "prepublishOnly": "bun run build && npm run lint && npm test",
-    "lint": "python3 bin/lint-python.py && node --check bin/sro-install-assets.mjs"
+    "prepublishOnly": "npm run version:sync && bun run build && npm run lint && npm test",
+    "lint": "python3 bin/lint-python.py && node --check bin/sro-install-assets.mjs && node --check bin/sync-version.mjs",
+    "version:sync": "node bin/sync-version.mjs"
   },
   "dependencies": {
     "@opencode-ai/plugin": "^1.18.0"

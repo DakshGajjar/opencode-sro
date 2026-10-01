@@ -157,7 +157,20 @@ def test_publish_gates_are_runnable() -> None:
     for script in ("bin/lint-python.py", "bin/sro-install-assets.mjs"):
         assert (REPO / script).exists(), script
     assert "lint" in scripts and "test" in scripts
-    assert scripts["prepublishOnly"] == "bun run build && npm run lint && npm test"
+    # Order and membership, not an exact string. `npm version` does not know about
+    # pyproject.toml, so a version bump drifts it and the next publish fails here —
+    # so prepublishOnly now repairs it first, and pinning the literal would just
+    # mean the next legitimate step has to edit this test.
+    steps = scripts["prepublishOnly"]
+    for required in ("build", "lint", "test"):
+        assert required in steps, f"prepublishOnly must run {required}"
+    assert steps.index("build") < steps.index("lint") < steps.index("test"), (
+        f"prepublishOnly runs out of order: {steps}"
+    )
+    assert "version:sync" in steps, (
+        "prepublishOnly must repair the pyproject version before the tests that "
+        "check it, or every npm version bump fails the publish"
+    )
 
 
 def test_state_goes_to_the_workspace_not_the_package() -> None:
@@ -197,7 +210,9 @@ def test_publish_gate_does_not_depend_on_the_publishers_python() -> None:
     assert "npm publish" in script, "the failure must say what to do next"
 
     assert PACKAGE["scripts"]["test"] == "python3 bin/run-tests.py"
-    assert PACKAGE["scripts"]["prepublishOnly"] == "bun run build && npm run lint && npm test"
+    prepublish = PACKAGE["scripts"]["prepublishOnly"]
+    assert prepublish.index("build") < prepublish.index("lint") < prepublish.index("test")
+    assert "version:sync" in prepublish
     assert (REPO / "bin" / "run-tests.py").exists()
 
 
