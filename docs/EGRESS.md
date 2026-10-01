@@ -106,6 +106,29 @@ Exceeding it is a policy denial, not a retry.
 reference, not a value, and resolves it at the moment of use. Values are never
 logged, never placed in evidence, never in a `repr`, never in an error message.
 
+## Implementation status
+
+**`sro/core/egress.py` exists.** It implements the transport described below:
+destination pinning with resolve-once-then-connect, a frozen `EgressLimits` that
+a caller cannot widen, GET/HEAD only, transport-owned headers that a handler
+cannot override, credentials as references resolved at the moment of use,
+response bodies fenced through `sro/core/untrusted.py`, and redirects refused by
+default with each hop re-pinned.
+
+**No network tool is approved, and none has been wired to it.** The transport
+being present is the precondition for tier 1, not an approval. `tests/test_egress.py`
+asserts that no network tool has shipped, so the day one does, both this document
+and the code are asked to change in the same commit.
+
+Two gaps it does not close, deliberately:
+
+- **No rate limiting.** `EgressLimits` caps one request. The per-host accounting
+  belongs to the policy engine, which already holds the program's stated number,
+  and inventing a second limiter here would give two answers to one question.
+- **No redirect following in practice.** `max_redirects` exists and is tested,
+  but the default is 0 and nothing raises it yet. It is here so the re-pinning
+  path is reviewed now rather than under time pressure.
+
 ## Per-tool decisions
 
 | Tool | Tier | Decision and reason |
@@ -154,3 +177,5 @@ A tool is not done when it returns the right data. It is done when:
    truncated and that the truncation is recorded in evidence.
 6. It appears in `NOT_IMPLEMENTED` today and is removed in the same commit that
    implements it, so the doc and the code cannot disagree.
+7. Its response bodies reach a model only through `fenced_body()`. A test
+   asserts the injection payload stays inside the fence.

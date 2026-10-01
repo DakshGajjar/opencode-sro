@@ -64,6 +64,7 @@ you are expected to paper over.
 | A skill cannot grant a capability | every agent demotes skills to guidance; the tool surface and the policy engine decide what exists |
 | Describing a finding is not evidence for it | `ToolSpec.produces_evidence` marks the bookkeeping tools, so a hypothesis cannot cite itself |
 | The shipped methodology cannot describe a tool that does not exist | `tests/test_method.py` resolves the catalog and fails if `METHOD.md` names an unimplemented tool |
+| A request cannot go somewhere the scope engine did not approve | `sro/core/egress.py` pins the resolved address, refuses private and metadata ranges, and takes the destination from policy rather than from handler input |
 
 ## The methodology
 

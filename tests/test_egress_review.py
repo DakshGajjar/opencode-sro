@@ -131,3 +131,62 @@ def test_the_two_scope_gaps_the_transport_must_close_are_real() -> None:
     assert "getaddrinfo" not in source, (
         "scope.py now resolves names; the IP-literal gap in EGRESS.md is stale"
     )
+
+
+def test_the_doc_records_that_the_transport_exists_and_approves_nothing() -> None:
+    """The transport being present is the precondition for tier 1, not an
+    approval. Both halves have to stay written down, because the tempting
+    misreading is that a reviewed transport means reviewed tools."""
+    assert "sro/core/egress.py" in BODY
+    assert re.search(r"[Nn]o network tool is approved", BODY)
+    assert re.search(r"precondition.{0,40}not an approval|not an approval", BODY)
+
+
+def test_the_doc_names_the_gaps_the_transport_leaves() -> None:
+    """A component that fixed everything would not be believed on this point."""
+    assert re.search(r"[Nn]o rate limiting", BODY)
+    assert "policy engine" in BODY
+    assert re.search(r"max_redirects.{0,80}default is 0|default is 0", BODY)
+
+
+def test_the_transport_module_exists_and_ships() -> None:
+    import json
+
+    assert (REPO / "sro" / "core" / "egress.py").exists()
+    files = json.loads((REPO / "package.json").read_text(encoding="utf-8"))["files"]
+    assert "sro/" in files, "the transport has to ship or no tool can reach it"
+
+
+def test_no_network_tool_is_wired_to_the_transport_yet() -> None:
+    """The one assertion that makes the previous two mean something."""
+    import inspect
+
+    from sro.core import egress
+
+    for name in ("send", "_one", "_redirect_target"):
+        assert callable(getattr(egress.Transport, name, None))
+
+    from sro.handlers import HANDLERS
+
+    network = {
+        "http_request", "dns_resolve", "tls_inspect", "api_schema_fetch",
+        "auth_session_test", "parameter_probe", "browser_navigate",
+        "cloud_asset_query", "ad_query",
+    }
+    assert not HANDLERS.keys() & network
+
+    # and no handler imports the transport. Grepping for the word would match the
+    # module docstring and the NOT_IMPLEMENTED reasons, so this looks at imports.
+    import ast
+
+    for handler in (REPO / "sro" / "handlers").glob("*.py"):
+        tree = ast.parse(handler.read_text(encoding="utf-8"))
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module)
+        assert not any("egress" in name for name in imported), (
+            f"{handler.name} imports the transport; a handler must be a caller, not a peer"
+        )
